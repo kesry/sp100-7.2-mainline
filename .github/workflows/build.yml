@@ -1,0 +1,117 @@
+name: build
+
+on:
+  workflow_dispatch:
+
+env:
+  KERNEL_VERSION: "7.2"
+  BOOT_SIZE: "33554432"
+
+jobs:
+  kernel:
+    name: Build kernel and boot image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            bc bison flex libssl-dev libelf-dev cpio zstd
+
+      - name: Kernel config
+        run: |
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
+          scripts/config --enable ARM64_USE_BUILTIN_DTB
+          scripts/config --set-str ARM64_BUILTIN_DTB_NAME "mediatek/mt6833-nzone-gnt-an00"
+          # root filesystem support must be built in (no initramfs in the boot img)
+          scripts/config --enable EXT4_FS
+          scripts/config --enable F2FS_FS
+          scripts/config --enable SCSI_UFS_MEDIATEK
+          scripts/config --enable DRM_MEDIATEK
+          scripts/config --enable DRM_PANEL_TRULY_NT35595_NZONE
+          scripts/config --enable COMMON_CLK_MT6833
+          scripts/config --enable MTK_SCPSYS_PM_DOMAINS
+          scripts/config --enable DRM_PANFROST
+          scripts/config --enable KVM
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+
+      - name: Build kernel and modules
+        run: |
+          make -j"$(nproc)" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            Image modules dtbs
+          # the DTB is embedded; stale object would keep the old blob
+          rm -f arch/arm64/kernel/builtin-dtb.o
+          make -j"$(nproc)" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- Image
+
+      - name: Stage modules
+        run: |
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            INSTALL_MOD_PATH=./mods INSTALL_MOD_STRIP=1 modules_install
+
+      - name: Pack boot image
+        run: |
+          python3 tools/build_boot.py \
+            arch/arm64/boot/Image \
+            boot.img
+
+      - name: Verify boot image
+        run: |
+          SIZE=$(stat -c%s boot.img)
+          echo "boot.img size: $SIZE"
+          test "$SIZE" = "$BOOT_SIZE"
+          python3 - <<'PY'
+          import struct, zlib
+          d = open('boot.img','rb').read()
+          assert d[:8] == b'ANDROID!'
+          ks = struct.unpack_from('<I', d, 8)[0]
+          raw = zlib.decompress(d[2048:2048+ks])
+          assert raw[0x38:0x3c] == b'ARMd', 'kernel magic'
+          print('kernel raw:', len(raw))
+          print('boot image structure OK')
+          PY
+
+      - name: Upload boot image
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-img
+          path: boot.img
+
+      - name: Upload modules
+        uses: actions/upload-artifact@v4
+        with:
+          name: modules
+          path: mods/lib/modules/*
+
+  rootfs:
+    name: Build rootfs image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install debootstrap
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends debootstrap e2fsprogs
+
+      - name: Debootstrap Debian rootfs
+        run: |
+          sudo debootstrap --arch=arm64 --variant=minbase \
+            --include=systemd,systemd-sysv,udev,dbus,openssh-server,iproute2,iputils-ping,network-manager,nano,less,locales,sudo,kmod,e2fsprogs \
+            trixie rootfs/ http://deb.debian.org/debian
+
+      - name: Configure rootfs
+        run: |
+          sudo bash rootfs-setup.sh rootfs/
+
+      - name: Create ext4 image
+        run: |
+          sudo bash make-rootfs-img.sh rootfs/ rootfs.img 4G
+
+      - name: Upload rootfs
+        uses: actions/upload-artifact@v4
+        with:
+          name: rootfs-img
+          path: rootfs.img
