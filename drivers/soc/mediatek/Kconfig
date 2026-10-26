@@ -1,0 +1,118 @@
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# MediaTek SoC drivers
+#
+menu "MediaTek SoC drivers"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+
+config MTK_A22X_RESERVED_MEMORY
+	bool "Samsung A22 5G reserved memory quirks"
+	depends on ARM64 && OF_RESERVED_MEM
+	help
+	  Ignore the unused size-only Android ZMC pool on the Samsung A22 5G.
+	  Fixed firmware reservations and the Linux display CMA are retained.
+	  This runs before dynamic allocation and never edits bootloader data.
+	  Other boards and firmware-placed regions keep their reservations.
+
+config MTK_MT6833_MODEM_POWER
+	bool "MediaTek MT6833 guarded modem power ownership"
+	depends on PM && PM_GENERIC_DOMAINS && OF
+	help
+	  Own the unused A22 modem domain through genpd. Keep its boot power
+	  state until an administrator explicitly requests runtime parking.
+
+config MTK_MT6833_LPM
+	bool "MediaTek MT6833 low-power firmware coordination"
+	depends on ARM64 && OF_RESERVED_MEM && SUSPEND && ARM_PSCI_FW && CPU_IDLE
+	select MFD_SYSCON
+	help
+	  Coordinate the boot-loaded MCUPM firmware and provide a guarded
+	  vendor CPU_SUSPEND backend on MT6833. Firmware initialization and
+	  deep suspend remain explicit administrator opt-ins during bring-up.
+	  Suspend-to-idle remains available without firmware initialization.
+
+config MTK_CMDQ
+	tristate "MediaTek CMDQ Support"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	select MAILBOX
+	select MTK_CMDQ_MBOX
+	select MTK_INFRACFG
+	help
+	  Say yes here to add support for the MediaTek Command Queue (CMDQ)
+	  driver. The CMDQ is used to help read/write registers with critical
+	  time limitation, such as updating display configuration during the
+	  vblank.
+
+config MTK_DEVAPC
+	tristate "Mediatek Device APC Support"
+	help
+	  Say yes here to enable support for Mediatek Device APC driver.
+	  This driver is mainly used to handle the violation which catches
+	  unexpected transaction.
+	  The violation information is logged for further analysis or
+	  countermeasures.
+
+config MTK_DVFSRC
+	tristate "MediaTek DVFSRC Support"
+	depends on ARCH_MEDIATEK
+	help
+	  Say yes here to add support for the MediaTek Dynamic Voltage
+	  and Frequency Scaling Resource Collector (DVFSRC): a HW
+	  IP found on many MediaTek SoCs, which is responsible for
+	  collecting DVFS requests from various SoC IPs, other than
+	  software, and performing bandwidth scaling to provide the
+	  best achievable performance-per-watt.
+
+config MTK_INFRACFG
+	bool "MediaTek INFRACFG Support"
+	select REGMAP
+	help
+	  Say yes here to add support for the MediaTek INFRACFG controller. The
+	  INFRACFG controller contains various infrastructure registers not
+	  directly associated to any device.
+
+config MTK_PMIC_WRAP
+	tristate "MediaTek PMIC Wrapper Support"
+	depends on RESET_CONTROLLER
+	depends on OF
+	select REGMAP
+	help
+	  Say yes here to add support for MediaTek PMIC Wrapper found
+	  on different MediaTek SoCs. The PMIC wrapper is a proprietary
+	  hardware to connect the PMIC.
+
+config MTK_REGULATOR_COUPLER
+	bool "MediaTek SoC Regulator Coupler" if COMPILE_TEST
+	default ARCH_MEDIATEK
+	depends on REGULATOR
+
+config MTK_MMSYS
+	tristate "MediaTek MMSYS Support"
+	default ARCH_MEDIATEK
+	depends on HAS_IOMEM
+	depends on MTK_CMDQ || MTK_CMDQ=n
+	help
+	  Say yes here to add support for the MediaTek Multimedia
+	  Subsystem (MMSYS).
+
+config MTK_SVS
+	tristate "MediaTek Smart Voltage Scaling(SVS)"
+	depends on NVMEM_MTK_EFUSE && NVMEM
+	help
+	  The Smart Voltage Scaling(SVS) engine is a piece of hardware
+	  which has several controllers(banks) for calculating suitable
+	  voltage to different power domains(CPU/GPU/CCI) according to
+	  chip process corner, temperatures and other factors. Then DVFS
+	  driver could apply SVS bank voltage to PMIC/Buck.
+
+config MTK_SOCINFO
+	tristate "MediaTek SoC Information"
+	default y
+	depends on NVMEM_MTK_EFUSE
+	select SOC_BUS
+	help
+	  The MediaTek SoC Information (mtk-socinfo) driver provides
+	  information about the SoC to the userspace including the
+	  manufacturer name, marketing name and soc name.
+
+endmenu

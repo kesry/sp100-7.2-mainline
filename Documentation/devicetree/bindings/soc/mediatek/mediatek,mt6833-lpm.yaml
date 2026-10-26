@@ -1,0 +1,113 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/soc/mediatek/mediatek,mt6833-lpm.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6833 boot-loaded low-power firmware interface
+
+maintainers:
+  - Dodaskot <pessdres@gmail.com>
+
+description: |
+  Bring-up interface for the MCUPM firmware loaded by Samsung A226B LK.
+  Platform channel 0, policy mailbox 3 and disabled-EEM channel 7 share
+  doorbell registers. The original MCUPM controller must stay disabled
+  to avoid multiple owners. Shared memory reuses the existing reserved
+  MCUPM region; the firmware image itself is not loaded by this interface.
+  Deep suspend requires explicit firmware initialization by an administrator.
+
+properties:
+  compatible:
+    const: mediatek,mt6833-lpm
+
+  reg:
+    items:
+      - description: LPM mailbox 3
+      - description: Platform mailbox 0
+      - description: Transmit doorbell set
+      - description: Transmit pending bits
+      - description: Receive pending clear
+      - description: Receive pending bits
+      - description: EEM mailbox 7
+
+  reg-names:
+    items:
+      - const: lpm-mailbox
+      - const: platform-mailbox
+      - const: tx-set
+      - const: tx-status
+      - const: rx-clear
+      - const: rx-status
+      - const: eem-mailbox
+
+  memory-region:
+    maxItems: 1
+    description: Existing reserved MCUPM shared DRAM, at least 0x110568 bytes
+
+  clocks:
+    description: Unused board clocks retained by the bootloader
+    minItems: 14
+    maxItems: 18
+
+  clock-names:
+    minItems: 14
+    items:
+      - const: boot-uart1
+      - const: boot-spi0
+      - const: boot-spi3
+      - const: boot-spi4
+      - const: boot-spi5
+      - const: boot-spi6
+      - const: boot-spi7
+      - const: boot-mdp-rdma0
+      - const: boot-mdp-rdma1
+      - const: boot-mdp-smi0
+      - const: boot-mdp-wrot0
+      - const: boot-mdp-wrot1
+      - const: boot-mdp-fake0
+      - const: boot-mmpll
+      - const: boot-ufs
+      - const: boot-unipro
+      - const: boot-ufs-bclk
+      - const: boot-ufs-source
+
+  mediatek,firmware-config:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: |
+      Preserved vendor LPM configuration node with irq-remain,
+      resource-ctrl and constraints lists. This transitional interface
+      reuses Samsung's firmware configuration without enabling its driver.
+
+  mediatek,unused-ufs:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: Disabled UFS controller on an eMMC board with no UFS device
+
+  mediatek,spm:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: SPM syscon providing read-only unused UFS request status
+
+dependencies:
+  mediatek,spm: [ 'mediatek,unused-ufs' ]
+
+allOf:
+  - if:
+      required:
+        - mediatek,unused-ufs
+    then:
+      properties:
+        clocks:
+          minItems: 18
+        clock-names:
+          minItems: 18
+
+required:
+  - compatible
+  - reg
+  - reg-names
+  - memory-region
+  - clocks
+  - clock-names
+  - mediatek,firmware-config
+
+additionalProperties: false

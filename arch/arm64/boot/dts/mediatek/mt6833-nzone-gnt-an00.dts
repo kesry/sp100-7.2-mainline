@@ -1,0 +1,1072 @@
+﻿// SPDX-License: GPL-2.0
+/*
+ * MT6833 / NZONE S7 (GNT-AN00) mainline bring-up tree.
+ *
+ * Structure proven on hardware: builtin-DTB boot, kernel-direct root on the
+ * UFS (root=/dev/sdc60), full mblock reserved-memory table (docs/10), and the
+ * connectivity nodes for the out-of-tree wmt_drv/btif/wlan_6833_axi modules.
+ *
+ * Every register/IRQ value is copied from the RUNNING Android tree
+ * (docs/live-android.dts), never guessed.
+ */
+
+/dts-v1/;
+
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/clock/mt6833-clk.h>
+#include <dt-bindings/pinctrl/mt6833-pinfunc.h>
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/power/mediatek,mt6833-power.h>
+#include <dt-bindings/phy/phy.h>
+#include <dt-bindings/usb/pd.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/input/linux-event-codes.h>
+
+/ {
+	model = "NZONE S7 (GNT-AN00)";
+	compatible = "mediatek,mt6833";
+	interrupt-parent = <&gic>;
+	#address-cells = <2>;
+	#size-cells = <2>;
+
+	chosen {
+		/*
+		 * fw_devlink=off: the consys device's fwnode device-links (to the
+		 * clock/power/pmic suppliers) never transition out of
+		 * waiting_for_supplier on this kernel, which blocks its probe
+		 * forever (bind returns I/O error, no GNTDBG probe log) and so
+		 * wifi never comes up.
+		 */
+		bootargs = "ignore_loglevel loglevel=8 panic=0 console=tty0 fbcon=nodefer keep_bootcon clk_ignore_unused pd_ignore_unused fw_devlink=off root=UUID=1ba90d08-2fc3-4ce3-b40f-d7b4d6e9f9bc rootfstype=ext4 rw rootwait";
+		kaslr-seed = <0 0>;
+
+		fb0: framebuffer@7ed80000 {
+			compatible = "simple-framebuffer";
+			reg = <0 0x7ed80000 0 0xd80000>;
+			width = <720>;
+			height = <1600>;
+			stride = <2944>;
+			format = "a8r8g8b8";
+			width-mm = <68>;
+			height-mm = <151>;
+			clocks = <&topckgen CLK_TOP_MAINPLL_D3>;
+			memory-region = <&framebuffer_mem>;
+			/*
+			 * Disabled: mtk-drm owns the panel now (RDMA0 -> DSI0).
+			 * simpledrm and mtk-drm must not both drive the same DSI;
+			 * doing so gave a striped garbage image and then hung the
+			 * machine (2026-10-25 20:21).
+			 */
+			status = "okay";
+		};
+	};
+
+	/*
+	 * 6 GiB of DRAM at 0x40000000, exactly like the stock Android node
+	 * (docs/live-android.dts: reg = <0x00 0x40000000 0x01 0x80000000>).
+	 * This was previously limited to ~1 GiB, which hid 5/6 of the RAM.
+	 * Every protected region inside this window must stay in
+	 * reserved-memory, otherwise the kernel allocates TEE/SCP/modem
+	 * memory and the SoC resets (see docs/06).
+	 */
+	memory@40000000 {
+		device_type = "memory";
+		reg = <0 0x40000000 0x1 0x80000000>;
+	};
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		cpu@000 { device_type = "cpu"; compatible = "arm,cortex-a55"; reg = <0x000>; enable-method = "psci"; clock-frequency = <2000000000>; };
+		cpu@100 { device_type = "cpu"; compatible = "arm,cortex-a55"; reg = <0x100>; enable-method = "psci"; clock-frequency = <2000000000>; };
+		cpu@200 { device_type = "cpu"; compatible = "arm,cortex-a55"; reg = <0x200>; enable-method = "psci"; clock-frequency = <2000000000>; };
+		cpu@300 { device_type = "cpu"; compatible = "arm,cortex-a55"; reg = <0x300>; enable-method = "psci"; clock-frequency = <2000000000>; };
+		cpu@400 { device_type = "cpu"; compatible = "arm,cortex-a55"; reg = <0x400>; enable-method = "psci"; clock-frequency = <2200000000>; };
+		cpu@500 { device_type = "cpu"; compatible = "arm,cortex-a55"; reg = <0x500>; enable-method = "psci"; clock-frequency = <2200000000>; };
+		cpu@600 { device_type = "cpu"; compatible = "arm,cortex-a76"; reg = <0x600>; enable-method = "psci"; clock-frequency = <2200000000>; };
+		cpu@700 { device_type = "cpu"; compatible = "arm,cortex-a76"; reg = <0x700>; enable-method = "psci"; clock-frequency = <2200000000>; };
+	};
+
+	/*
+	 * The mt6833 clock driver looks this parent up BY NAME ("clk26m"), so the
+	 * node name must be exactly clk26m. As "oscillator-26m" the lookup failed,
+	 * every derived clock reported a rate of 0, and the SPI driver computed a
+	 * garbage divider.
+	 */
+	clk26m: clk26m {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <26000000>;
+	};
+
+	psci {
+		compatible = "arm,psci-1.0";
+		method = "smc";
+		cpu_suspend = <0xc4000001>;
+		cpu_off = <0x84000002>;
+		cpu_on = <0xc4000003>;
+	};
+
+	timer {
+		compatible = "arm,armv8-timer";
+		interrupts = <GIC_PPI 13 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_PPI 14 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_PPI 11 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_PPI 10 IRQ_TYPE_LEVEL_LOW>;
+	};
+
+	gic: interrupt-controller {
+		compatible = "arm,gic-v3";
+		#interrupt-cells = <3>;
+		#address-cells = <2>;
+		#size-cells = <2>;
+		#redistributor-regions = <1>;
+		interrupt-controller;
+		reg = <0 0x0c000000 0 0x40000>,   /* GICD */
+		      <0 0x0c040000 0 0x200000>;  /* GICR */
+		interrupts = <GIC_PPI 9 IRQ_TYPE_LEVEL_HIGH>;
+	};
+
+	topckgen: clock-controller@10000000 {
+		compatible = "mediatek,mt6833-topckgen", "syscon";
+		reg = <0 0x10000000 0 0x1000>;
+		#clock-cells = <1>;
+	};
+
+	infracfg_ao: clock-controller@10001000 {
+		compatible = "mediatek,mt6833-infracfg_ao", "syscon";
+		reg = <0 0x10001000 0 0x1000>;
+		#clock-cells = <1>;
+	};
+
+	/* BCRM / INFRA_NAO @ 0x10215000 (stock DTB: infra_bcrm@10215000).
+	 * MFG1's AXI "way" gate lives at +0x4c bit11. Declared now so the
+	 * power-controller can reference it once MFG domains come back. */
+	infracfg_nao: syscon@10215000 {
+		compatible = "mediatek,mt6833-infracfg_nao", "syscon";
+		reg = <0 0x10215000 0 0x1000>;
+	};
+
+	apmixedsys: clock-controller@1000c000 {
+		compatible = "mediatek,mt6833-apmixedsys", "syscon";
+		reg = <0 0x1000c000 0 0xe00>;
+		#clock-cells = <1>;
+	};
+
+	/* I2C "west" wrap: provides the per-controller i2c gate clocks */
+	imp_iic_wrap_w: clock-controller@11e03000 {
+		compatible = "mediatek,mt6833-imp_iic_wrap_w", "syscon";
+		reg = <0 0x11e03000 0 0x1000>;
+		#clock-cells = <1>;
+	};
+
+	pinctrl: pinctrl@10005000 {
+		/*
+		 * Only the mt6833 driver. Listing "mediatek,paris" as a fallback
+		 * let the MT6765 driver bind first; its pin/function tables then
+		 * silently ignored the MT6833 muxes (SPI1 pins stayed in GPIO
+		 * mode), so the touch controller never saw a clock.
+		 */
+		compatible = "mediatek,mt6833-pinctrl";
+		reg = <0 0x10005000 0 0x1000>,
+		      <0 0x10002000 0 0x1000>,
+		      <0 0x10003000 0 0x1000>,
+		      <0 0x10004000 0 0x1000>,
+		      <0 0x11d10000 0 0x1000>,
+		      <0 0x11d30000 0 0x1000>,
+		      <0 0x11d40000 0 0x1000>,
+		      <0 0x1000b000 0 0x1000>;
+		reg-names = "gpio", "iocfg_rb", "iocfg_bm", "iocfg_br",
+			    "iocfg_lm", "iocfg_bl", "iocfg_rt", "eint";
+		gpio-ranges = <&pinctrl 0 0 201>;
+		gpio-controller;
+		#gpio-cells = <2>;
+		interrupt-controller;
+		#interrupt-cells = <2>;
+		interrupts = <GIC_SPI 212 IRQ_TYPE_LEVEL_HIGH>;
+
+		/* I2C5 pads (SCL on GPIO107, SDA on GPIO108) - stock pinmux */
+		i2c5_pins: i2c5-pins {
+			pins-bus {
+				pinmux = <PINMUX_GPIO107__FUNC_SCL5>,
+					 <PINMUX_GPIO108__FUNC_SDA5>;
+			};
+		};
+
+		/* MT6360 and Type-C PD interrupt lines */
+		typec_irq_pin: typec-irq-pin {
+			pins {
+				pinmux = <PINMUX_GPIO9__FUNC_GPIO9>;
+				input-enable;
+				bias-pull-up;
+			};
+		};
+
+		/* SPI1 bus: the Chipone touch controller sits here (CS = GPIO28) */
+		spi1_pins: spi1-pins {
+			pins-bus {
+				pinmux = <PINMUX_GPIO27__FUNC_SPI1_CLK>,
+					 <PINMUX_GPIO28__FUNC_SPI1_CSB>,
+					 <PINMUX_GPIO29__FUNC_SPI1_MO>,
+					 <PINMUX_GPIO30__FUNC_SPI1_MI>;
+			};
+		};
+
+		/*
+		 * Touch reset (GPIO15, stock pinmux 0xf00) is NOT hogged here.
+		 * The controller only comes up correctly when it is powered first
+		 * and then sees a RST low->high pulse, so the touchpwr module owns
+		 * the line and performs that sequence.
+		 */
+	};
+
+	/* Hardware RNG (stock: trng@1020f000) - systemd entropy */
+	trng: trng@1020f000 {
+		compatible = "mediatek,mt7623-rng";
+		reg = <0 0x1020f000 0 0x1000>;
+		clocks = <&infracfg_ao CLK_IFRAO_TRNG>;
+		clock-names = "rng";
+		status = "okay";
+	};
+
+	/* GPU clock gate: registers only respond with the MFG top domain on.
+	 * Disabled: the MFG power-domain chain is removed (see spm node). */
+	mfgcfg_ml: clock-controller@13fbf000 {
+		compatible = "mediatek,mt6833-mfgcfg";
+		reg = <0 0x13fbf000 0 0x1000>;
+		#clock-cells = <1>;
+		/*
+		 * Registers here only respond while the MFG top domain is up.
+		 * need_runtime_pm on the gate makes clk_prepare_enable() do
+		 * pm_runtime_resume_and_get() on this device first, so genpd
+		 * runs the real scpsys_power_on() path (rail -> PWR_CON ->
+		 * SRAM -> bus-protect) before the gate is touched.
+		 */
+		power-domains = <&spm 0>;
+		status = "okay";
+	};
+
+	/*
+	 * Mali-G57 MC2 (same GPU configuration as MT8370).
+	 * Disabled: it depends on the MFG2/MFG3 domains, which cannot be
+	 * powered on this device's SPM firmware (-110 timeout). Re-enable
+	 * only together with a working MFG domain setup.
+	 */
+	gpu: gpu@13000000 {
+		compatible = "mediatek,mt6833-mali", "mediatek,mt8370-mali",
+			     "arm,mali-valhall-jm";
+		reg = <0 0x13000000 0 0x4000>;
+		interrupts = <GIC_SPI 366 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 365 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 364 IRQ_TYPE_LEVEL_HIGH>;
+		interrupt-names = "job", "mmu", "gpu";
+		clocks = <&mfgcfg_ml CLK_MFGCFG_BG3D>;
+		mali-supply = <&mt6359_vproc1_buck_reg>;
+		sram-supply = <&mt6359_vsram_md_ldo_reg>;
+		power-domains = <&spm 0>, <&spm 1>, <&spm 2>, <&spm 3>;
+		power-domain-names = "mfg0", "mfg1", "mfg2", "mfg3";
+		operating-points-v2 = <&gpu_opp_table>;
+		#cooling-cells = <2>;
+		/* Enabled for the probe test; MFG power is unavailable, so this
+		 * is expected to fail. See docs/26 and docs/27. */
+		status = "okay";
+	};
+
+	/*
+	 * GPU DVFS table from the a22x port (qualified on the same SoC):
+	 * conservative voltages, 955 MHz ceiling, not EEM-calibrated.
+	 */
+	gpu_opp_table: opp-table-gpu {
+		compatible = "operating-points-v2";
+		opp-shared;
+
+		opp-390000000 {
+			opp-hz = /bits/ 64 <390000000>;
+			opp-microvolt = <750000>;
+		};
+		opp-467000000 {
+			opp-hz = /bits/ 64 <467000000>;
+			opp-microvolt = <750000>;
+		};
+		opp-545000000 {
+			opp-hz = /bits/ 64 <545000000>;
+			opp-microvolt = <750000>;
+		};
+		opp-622000000 {
+			opp-hz = /bits/ 64 <622000000>;
+			opp-microvolt = <750000>;
+		};
+		opp-700000000 {
+			opp-hz = /bits/ 64 <700000000>;
+			opp-microvolt = <750000>;
+		};
+		opp-790000000 {
+			opp-hz = /bits/ 64 <790000000>;
+			opp-microvolt = <762500>;
+		};
+		opp-880000000 {
+			opp-hz = /bits/ 64 <880000000>;
+			opp-microvolt = <775000>;
+		};
+		opp-955000000 {
+			opp-hz = /bits/ 64 <955000000>;
+			opp-microvolt = <781250>;
+		};
+	};
+
+	/*
+	 * Panel brightness via DCS 0x51 injected into the LK-initialised DSI0
+	 * video stream. This stays the default: the native mtk-drm path needs
+	 * the vendor mmsys OVL routing plus SMI/IOMMU nodes, which mainline
+	 * does not provide for mt6833 yet (see docs/28).
+	 */
+	backlight: backlight@14013000 {
+		compatible = "mediatek,dsi-vm-backlight";
+		reg = <0 0x14013000 0 0x1000>;
+		mediatek,wrctrld = <0x2c>;
+		default-brightness-level = <200>;
+	};
+
+	/*
+	 * Native display pipeline (mtk-drm, RDMA0 -> DSI0), modelled on the
+	 * a22x native-display bring-up. The DISP power domain is already on
+	 * at boot (LK drives it for the splash), so genpd only reads state.
+	 * Panel: Truly NT35595 720x1600 video mode, init sequence from the
+	 * stock EMUI lcd-kit block. Backlight is DCS 0x51 via the panel
+	 * driver (the old dsi-vm-backlight node is gone with the DSI claim).
+	 */
+	panel_vdd_ml: regulator-panel-vdd {
+		compatible = "regulator-fixed";
+		regulator-name = "panel-iovcc";
+		/* iovcc comes from the PMIC (stock iovcc_ctrl_mode = 2).
+		 * GPIO86 is the RESET line, not a supply enable. */
+		regulator-always-on;
+	};
+
+	panel_vsp_ml: regulator-panel-vsp {
+		compatible = "regulator-fixed";
+		regulator-name = "panel-positive-bias";
+		gpio = <&pinctrl 137 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		regulator-boot-on;
+	
+		regulator-always-on;
+};
+
+	panel_vsn_ml: regulator-panel-vsn {
+		compatible = "regulator-fixed";
+		regulator-name = "panel-negative-bias";
+		gpio = <&pinctrl 138 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		regulator-boot-on;
+	
+		regulator-always-on;
+};
+
+	display-ml {
+		compatible = "simple-bus";
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		/* MM clock gates: no power-domain dep, must register before mmsys */
+		mm_clk_ml: clock-controller@14000000 {
+			compatible = "mediatek,mt6833-display-clocks";
+			reg = <0 0x14000000 0 0x1000>;
+			#clock-cells = <1>;
+		};
+
+		mmsys_ml: syscon@14000000 {
+			compatible = "mediatek,mt6833-display", "syscon";
+			reg = <0 0x14000000 0 0x1000>;
+		};
+
+		disp_mutex_ml: mutex@14001000 {
+			compatible = "mediatek,mt6833-disp-mutex";
+			reg = <0 0x14001000 0 0x1000>;
+			power-domains = <&spm 6>;
+			clocks = <&mm_clk_ml CLK_MM_DISP_MUTEX0>;
+		};
+
+	
+	/*
+	 * The rest of the display pipeline. MT6833 uses the same block layout
+	 * and register map as MT8183, so the mt8183 compatibles are correct
+	 * here; the vendor tree drives these exact blocks with its
+	 * mt6833-disp-* compatibles at the same addresses. Without these
+	 * nodes the driver only owns RDMA+DSI and LK's OVL layers keep
+	 * compositing a stale image on top of ours.
+	 */
+
+
+
+
+
+
+
+	disp_rdma0_ml: rdma@14007000 {
+			compatible = "mediatek,mt6833-disp-rdma";
+			reg = <0 0x14007000 0 0x1000>, <0 0x14004000 0 0x1000>;
+			reg-names = "rdma", "larb";
+			interrupts = <GIC_SPI 257 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&mm_clk_ml CLK_MM_DISP_RDMA0>,
+				 <&mm_clk_ml CLK_MM_SMI_INFRA>,
+				 <&mm_clk_ml CLK_MM_SMI_COMMON>,
+				 <&mm_clk_ml CLK_MM_SMI_GALS>,
+				 <&mm_clk_ml CLK_MM_SMI_IOMMU>;
+			clock-names = "rdma", "smi-infra", "smi-common",
+				      "smi-gals", "smi-iommu";
+		};
+
+		mipi_tx0_ml: phy@11e50000 {
+			compatible = "mediatek,mt6833-mipi-tx";
+			reg = <0 0x11e50000 0 0x1000>;
+			clocks = <&clk26m>;
+			#clock-cells = <0>;
+			#phy-cells = <0>;
+			clock-output-names = "mipi_tx0_ml_pll";
+		};
+
+		dsi0_ml: dsi@14013000 {
+			compatible = "mediatek,mt6833-dsi";
+			reg = <0 0x14013000 0 0x1000>;
+			interrupts = <GIC_SPI 269 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&mm_clk_ml CLK_MM_DSI0>,
+				 <&mm_clk_ml CLK_MM_DSI0_DSI_CK_DOMAIN>,
+				 <&mipi_tx0_ml>;
+			clock-names = "engine", "digital", "hs";
+			phys = <&mipi_tx0_ml>;
+			phy-names = "dphy";
+			mediatek,cphy-timing = <35 26>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			panel_ml: panel@0 {
+				compatible = "truly,nt35595-nzone";
+				reg = <0>;
+				reset-gpios = <&pinctrl 86 GPIO_ACTIVE_HIGH>;
+				vdd-supply = <&panel_vdd_ml>;
+				vsp-supply = <&panel_vsp_ml>;
+				vsn-supply = <&panel_vsn_ml>;
+				port {
+					panel_in_ml: endpoint {
+						remote-endpoint = <&dsi_out_ml>;
+					};
+				};
+			};
+
+			port {
+				dsi_out_ml: endpoint {
+					remote-endpoint = <&panel_in_ml>;
+				};
+			};
+		};
+	};
+
+	/*
+	 * I2C5 - the MT6360 (charger + Type-C PD + flash) lives here.
+	 * Layout copied from the working a22x port (same SoC): base 0x11e01000,
+	 * reg[1] = APDMA base, GIC SPI 117, "main" = imp_iic_wrap_w #1,
+	 * "dma" = infracfg_ao AP_DMA, clock-div 1, mt8192 i2c description.
+	 * The pads must be muxed to SCL5/SDA5 by pinctrl or nothing answers.
+	 */
+	i2c5: i2c@11e01000 {
+		compatible = "mediatek,mt6833-i2c", "mediatek,mt8192-i2c";
+		reg = <0 0x11e01000 0 0x1000>,
+		      <0 0x10217500 0 0x80>;	/* reg[1] = APDMA base (pdmabase) */
+		interrupts = <GIC_SPI 117 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&imp_iic_wrap_w CLK_IMPW_AP_CLOCK_RO_I2C5>,
+			 <&infracfg_ao CLK_IFRAO_AP_DMA>;
+		clock-names = "main", "dma";
+		clock-div = <1>;
+		clock-frequency = <400000>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&i2c5_pins>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+		status = "okay";
+
+		mt6360: pmic@34 {
+			compatible = "mediatek,mt6360";
+			reg = <0x34>;
+			interrupts-extended = <&pinctrl 10 IRQ_TYPE_EDGE_FALLING>;
+			interrupt-names = "IRQB";
+			interrupt-controller;
+			#interrupt-cells = <1>;
+			status = "okay";
+
+			mt6360_adc: adc {
+				compatible = "mediatek,mt6360-adc";
+				#io-channel-cells = <1>;
+			};
+
+			/* Only the charger is described: the MT6360 bucks/LDOs keep
+			 * whatever the bootloader programmed (touching them broke
+			 * the UFS rails on this board before). */
+			mt6360_chg: charger {
+				compatible = "mediatek,mt6360-chg";
+				richtek,vinovp-microvolt = <6500000>;
+
+				/* OTG boost output; a virtual regulator supplied by the
+				 * charger driver, no bucks/LDOs are touched */
+				otg_vbus: usb-otg-vbus-regulator {
+					regulator-name = "usb-otg-vbus";
+					regulator-min-microvolt = <5000000>;
+					regulator-max-microvolt = <5000000>;
+				};
+			};
+
+			mt6360_tcpc: tcpc {
+				compatible = "mediatek,mt6360-tcpc";
+				interrupts-extended = <&pinctrl 9 IRQ_TYPE_LEVEL_LOW>;
+				interrupt-names = "PD_IRQB";
+				pinctrl-names = "default";
+				pinctrl-0 = <&typec_irq_pin>;
+				/*
+				 * tcpm_register_port() rejects the port unless
+				 * tcpc->set_vbus is populated, and mt6360_tcpc_probe()
+				 * only populates it when a "vbus" regulator exists.
+				 */
+				vbus-supply = <&otg_vbus>;
+
+				/* the tcpc driver refuses to register without this */
+				connector {
+					compatible = "usb-c-connector";
+					label = "USB-C";
+					data-role = "dual";
+					power-role = "dual";
+					try-power-role = "sink";
+					/*
+					 * tcpm_fw_get_caps() requires BOTH pdo lists for a
+					 * dual-role port; without source-pdos it returns
+					 * -EINVAL and the tcpc never registers.
+					 */
+					source-pdos = <PDO_FIXED(5000, 500,
+								 PDO_FIXED_DUAL_ROLE |
+								 PDO_FIXED_DATA_SWAP |
+								 PDO_FIXED_USB_COMM)>;
+					sink-pdos = <PDO_FIXED(5000, 2000,
+							       PDO_FIXED_DUAL_ROLE |
+							       PDO_FIXED_DATA_SWAP |
+							       PDO_FIXED_USB_COMM)>;
+					op-sink-microwatt = <2500000>;
+				};
+			};
+		};
+	};
+
+
+
+
+	/*
+	 * SPI1 - the touch panel controller (Chipone, per the stock ts_kit node)
+	 * hangs off this bus with CS on GPIO28. The stock node also says 8 MHz,
+	 * SPI mode 0, x_max 720, y_max 1600, 10 fingers.
+	 * spidev is attached so userspace can identify the chip before a real
+	 * driver exists.
+	 */
+	spi1: spi@11010000 {
+		compatible = "mediatek,mt6765-spi";
+		reg = <0 0x11010000 0 0x100>;
+		interrupts = <GIC_SPI 160 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&topckgen CLK_TOP_MAINPLL_D5_D4>,
+			 <&topckgen CLK_TOP_SPI_SEL>,
+			 <&infracfg_ao CLK_IFRAO_SPI1>;
+		clock-names = "parent-clk", "sel-clk", "spi-clk";
+		mediatek,pad-select = <0>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&spi1_pins>;
+		/*
+		 * Touch controller reset (stock ts_kit: RST on GPIO15). Exposed
+		 * here so a driver can pulse it - the ICNL9911 only comes up if it
+		 * is powered first and then sees RST low -> high.
+		 */
+		touch-rst-gpios = <&pinctrl 15 GPIO_ACTIVE_HIGH>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+		status = "okay";
+
+		touch_spi: spidev@0 {
+			compatible = "rohm,dh2228fv";
+			reg = <0>;
+			spi-max-frequency = <8000000>;
+		};
+	};
+
+	/* SPM syscon + power controller (scpsys needs the parent regmap) */
+	scpsys_ml: syscon@10006000 {
+		compatible = "mediatek,mt6833-scpsys", "syscon", "simple-mfd";
+		reg = <0 0x10006000 0 0x1000>;
+
+		spm: power-controller {
+			compatible = "mediatek,mt6833-power-controller";
+			#address-cells = <1>;
+			#size-cells = <0>;
+			#power-domain-cells = <1>;
+
+			mediatek,infracfg     = <&infracfg_ao>;
+			mediatek,infracfg-nao = <&infracfg_nao>;
+			mfg0-supply = <&mt6359_vproc1_buck_reg>;
+
+			/* ONLY mfg0: MFG1..6 refuse to power up on this device and
+			 * declaring them aborts scpsys_probe(), taking conn with it. */
+			mfg0_domain: power-domain@0 {
+				reg = <0>;
+				#power-domain-cells = <0>;
+				domain-supply = <&mt6359_vproc1_buck_reg>;
+			};
+
+			mfg1_domain: power-domain@1 {
+				reg = <1>;
+				#power-domain-cells = <0>;
+				domain-supply = <&mt6359_vproc1_buck_reg>;
+			};
+
+			mfg2_domain: power-domain@2 {
+				reg = <2>;
+				#power-domain-cells = <0>;
+				domain-supply = <&mt6359_vproc1_buck_reg>;
+			};
+
+			mfg3_domain: power-domain@3 {
+				reg = <3>;
+				#power-domain-cells = <0>;
+				domain-supply = <&mt6359_vproc1_buck_reg>;
+			};
+
+			/*
+			 * Display domain (a22x-mainline patch 0077): every
+			 * display block hangs off this. Without it the mutex
+			 * and RDMA defer forever waiting for a domain that
+			 * does not exist.
+			 */
+			disp_domain: power-domain@6 {
+				reg = <6>;
+				clocks = <&topckgen CLK_TOP_DISP_SEL>;
+				clock-names = "disp";
+				mediatek,infracfg = <&infracfg_ao>;
+				#power-domain-cells = <0>;
+			};
+
+			conn_domain: power-domain@5 {
+				reg = <5>;
+				mediatek,infracfg = <&infracfg_ao>;
+				#power-domain-cells = <0>;
+			};
+
+			/* MFG chain re-added with GENPD_FLAG_NO_STAY_ON applied
+			 * to the driver (postmarketOS mt81 patch, 2026-08). */
+			/* MFG power domains intentionally NOT declared:
+			 * adding them makes the power-controller driver fail
+			 * (MFG1 power-on times out) which also kills the conn
+			 * domain and panics WiFi at boot. See docs/35.
+			 */
+			/*
+			 * ONLY conn + disp. The a22x MFG0/1/2/3 chain was tried here:
+			 * MFG1 power-on times out (-110) on this device's SPM/ATF
+			 * firmware, the whole power-controller registration then
+			 * aborts and conn dies with it (no wifi). Do not re-add
+			 * MFG domains without solving that first.
+			 */
+		};
+	};
+	/*
+	 * pwrap + MT6359 PMIC: interrupt wiring copied from the running
+	 * Android tree - the PMIC irq is GIC SPI 118 directly (0x76),
+	 * NOT through the pinctrl GPIO block.
+	 */
+
+	pmic-wrapper@10026000 {
+		compatible = "mediatek,mt6833-pwrap";
+		reg = <0 0x10026000 0 0x1000>;
+		reg-names = "pwrap";
+		interrupts = <GIC_SPI 220 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&infracfg_ao CLK_IFRAO_PMIC_AP>,
+			 <&infracfg_ao CLK_IFRAO_PMIC_TMR>;
+		clock-names = "spi", "wrap";
+
+		mt6359: pmic {
+			compatible = "mediatek,mt6359";
+			interrupts-extended = <&pinctrl 118 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+
+			regulators {
+				mt6359_vcn18_ldo_reg: ldo_vcn18 {
+					regulator-name = "vcn18";
+					regulator-min-microvolt = <1800000>;
+					regulator-max-microvolt = <1800000>;
+				};
+
+				mt6359_vcn13_ldo_reg: ldo_vcn13 {
+					regulator-name = "vcn13";
+					regulator-min-microvolt = <900000>;
+					regulator-max-microvolt = <1300000>;
+				};
+
+				mt6359_vcn33_1_ldo_reg: ldo_vcn33_1 {
+					regulator-name = "vcn33_1";
+					regulator-min-microvolt = <2800000>;
+					regulator-max-microvolt = <3500000>;
+				};
+
+				mt6359_vcn33_2_ldo_reg: ldo_vcn33_2 {
+					regulator-name = "vcn33_2";
+					regulator-min-microvolt = <2800000>;
+					regulator-max-microvolt = <3500000>;
+				};
+
+				/*
+				 * GPU rails (values from the working a22x port,
+				 * which qualified them on the same SoC).
+				 */
+				mt6359_vproc1_buck_reg: buck_vproc1 {
+					regulator-name = "vgpu";
+					regulator-min-microvolt = <625000>;
+					regulator-max-microvolt = <781250>;
+					regulator-settling-time-us = <40>;
+					regulator-enable-ramp-delay = <200>;
+				};
+
+				mt6359_vsram_md_ldo_reg: ldo_vsram_md {
+					regulator-name = "vsram_gpu";
+					regulator-min-microvolt = <850000>;
+					regulator-max-microvolt = <850000>;
+					regulator-enable-ramp-delay = <240>;
+					regulator-always-on;
+				};
+			};
+
+			/* battery voltage / temperature channels */
+			mt6359_auxadc: auxadc {
+				compatible = "mediatek,mt6359-auxadc";
+				#io-channel-cells = <1>;
+			};
+
+			/*
+			 * MT6359 fuel gauge (coulomb counter). VBAT comes from the
+			 * MT6360 ADC channel 4, exactly like the working a22x port;
+			 * R_FG_VALUE from the stock node is 5 mOhm.
+			 */
+			mt6359_fg: fuel-gauge {
+				compatible = "mediatek,mt6359-fuel-gauge";
+				mediatek,pmic = <&mt6359>;
+				mediatek,sense-resistor-micro-ohms = <5000>;
+				io-channels = <&mt6360_adc 4>;
+				io-channel-names = "voltage";
+				monitored-battery = <&battery>;
+				power-supplies = <&mt6360_chg>;
+			};
+		};
+	};
+
+	uart0: serial@11002000 {
+		compatible = "mediatek,mt6577-uart";
+		reg = <0 0x11002000 0 0x400>;
+		interrupts = <GIC_SPI 109 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&clk26m>;
+		clock-names = "baud";
+		status = "disabled";
+	};
+	/* USB peripheral (MUSB) */
+	usb0: usb@11200000 {
+		compatible = "mediatek,mt6833-musb", "mediatek,mtk-musb";
+		reg = <0 0x11200000 0 0x1000>;
+		interrupts = <GIC_SPI 96 IRQ_TYPE_LEVEL_HIGH>;
+		interrupt-names = "mc";
+		phys = <&u2port0 PHY_TYPE_USB2>;
+		dr_mode = "peripheral";
+		clocks = <&infracfg_ao CLK_IFRAO_SSUSB>,
+			 <&topckgen CLK_TOP_USB_TOP_SEL>,
+			 <&topckgen CLK_TOP_UNIVPLL_D5_D4>;
+		clock-names = "main", "mcu", "univpll";
+		status = "okay";
+	};
+	u2phy: t-phy@11e40000 {
+		compatible = "mediatek,mt6833-tphy", "mediatek,generic-tphy-v2";
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges = <0 0 0x11e40000 0x1000>;
+
+		u2port0: usb-phy@0 {
+			reg = <0x0 0x700>;
+			clocks = <&clk26m>;
+			clock-names = "ref";
+			#phy-cells = <1>;
+		};
+	};
+	/* UFS 2.2 host */
+	ufshci: ufshci@11270000 {
+		compatible = "mediatek,mt6833-ufshci";
+		reg = <0 0x11270000 0 0x2300>;
+		interrupts = <GIC_SPI 105 IRQ_TYPE_LEVEL_HIGH>;
+		phys = <&ufsphy>;
+		clocks = <&infracfg_ao CLK_IFRAO_UFS>,
+			 <&infracfg_ao CLK_IFRAO_AES>,
+			 <&infracfg_ao CLK_IFRAO_UNIPRO_SYSCLK>,
+			 <&infracfg_ao CLK_IFRAO_UFS_MP_SAP_BCLK>;
+		clock-names = "ufs", "ufs_aes",
+			      "unipro_sysclk", "unipro_mp_bclk";
+		freq-table-hz = <0 0>, <0 0>, <0 0>, <0 0>;
+		lanes-per-direction = <2>;
+		mediatek,ufs-disable-mcq;
+		status = "okay";
+	};
+	ufsphy: ufs-phy@11fa0000 {
+		compatible = "mediatek,mt8195-ufsphy", "mediatek,mt8183-ufsphy";
+		reg = <0 0x11fa0000 0 0xc000>;
+		clocks = <&clk26m>, <&clk26m>;
+		clock-names = "unipro", "mp";
+		#phy-cells = <0>;
+		status = "okay";
+	};
+	/*
+	 * Connectivity (CONSYS + MT6631): values verbatim from the
+	 * running Android tree. Power rails are driven by the WMT
+	 * driver via pwrap, like the stock system.
+	 */
+	btif: btif@1100c000 {
+		compatible = "mediatek,btif";
+		reg = <0 0x1100c000 0 0x1000>,
+		      <0 0x10217d80 0 0x80>,
+		      <0 0x10217e00 0 0x80>;
+		interrupts = <GIC_SPI 158 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 152 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 153 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&infracfg_ao CLK_IFRAO_BTIF>,
+			 <&infracfg_ao CLK_IFRAO_AP_DMA>;
+		clock-names = "btifc", "apdmac";
+		status = "okay";
+	};
+	consys: consys@18002000 {
+		compatible = "mediatek,mt6833-consys";
+		#address-cells = <2>;
+		#size-cells = <2>;
+		reg = <0 0x18002000 0 0x1000>,
+		      <0 0x10007000 0 0x100>,
+		      <0 0x10001000 0 0x1000>,
+		      <0 0x10006000 0 0x1000>,
+		      <0 0x18007000 0 0x1000>,
+		      <0 0x180b1000 0 0x1000>,
+		      <0 0x180a3000 0 0x1000>,
+		      <0 0x180a5000 0 0x800>,
+		      <0 0x180c1000 0 0x1000>,
+		      <0 0x18004000 0 0x1000>,
+		      <0 0x1024c000 0 0x40>,
+		      <0 0x10003000 0 0x1000>;
+		interrupts = <GIC_SPI 378 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 79 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 379 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&infracfg_ao CLK_IFRAO_CCIF4_AP>;
+		clock-names = "ccif";
+		power-domains = <&spm 5>;
+		memory-region = <&consys_reserved>;
+		vcn18-supply = <&mt6359_vcn18_ldo_reg>;
+		vcn13-supply = <&mt6359_vcn13_ldo_reg>;
+		vcn33_1_bt-supply = <&mt6359_vcn33_1_ldo_reg>;
+		vcn33_1_wifi-supply = <&mt6359_vcn33_1_ldo_reg>;
+		vcn33_2_wifi-supply = <&mt6359_vcn33_2_ldo_reg>;
+		status = "okay";
+	};
+	wifi: wifi@18000000 {
+		compatible = "mediatek,wifi";
+		reg = <0 0x18000000 0 0x100000>;
+		interrupts = <GIC_SPI 377 IRQ_TYPE_LEVEL_HIGH>;
+		memory-region = <&wifi_reserved>;
+		status = "okay";
+	};
+
+	/*
+	 * pstore / ramoops. The MTK firmware reserves 0x48090000..0x4809dfff
+	 * for this (stock DTB: mblock-14-pstore). Without a ramoops node the
+	 * kernel has CONFIG_PSTORE_RAM=y but nowhere to write, so every hang
+	 * so far left no trace. With it, dmesg and any panic survive a
+	 * watchdog reset and can be read from /sys/fs/pstore on the next boot.
+	 */
+	ramoops: ramoops@48090000 {
+		compatible = "ramoops";
+		reg = <0 0x48090000 0 0xe0000>;
+		record-size = <0x20000>;
+		console-size = <0x40000>;
+		pmsg-size = <0x20000>;
+		ftrace-size = <0>;
+		ecc-size = <16>;
+	};
+
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		framebuffer_mem: framebuffer@7ed80000 {
+			reg = <0 0x7ed80000 0 0xd80000>;
+			no-map;
+		};
+
+		consys_reserved: consys-reserve-memory {
+			compatible = "mediatek,consys-reserve-memory";
+			no-map;
+			size = <0 0x500000>;
+			alignment = <0 0x1000000>;
+			alloc-ranges = <0 0x40000000 0 0x80000000>;
+		};
+
+		wifi_reserved: wifi-reserve-memory {
+			compatible = "shared-dma-pool";
+			no-map;
+			size = <0 0x600000>;
+			alignment = <0 0x1000000>;
+			alloc-ranges = <0 0x40000000 0 0x80000000>;
+		};
+
+		/* mblock table installed by LK, copied from the running Android */
+		mblock-23-dpm-reserved { reg = <0 0xffe60000 0 0x190000>; no-map; };
+		mblock-22-ccci        { reg = <0 0x88000000 0 0x4960000>; no-map; };
+		mblock-21-ap_md_nc_smem { reg = <0 0x8e000000 0 0x1b0000>; };
+		mblock-20-md_mem_usage { reg = <0 0x98000000 0 0x20000000>; };
+		mblock-19-ccci_tag_mem { reg = <0 0xbff60000 0 0x10000>; };
+		mblock-18-scp-reserved { reg = <0 0xb9500000 0 0x400000>; no-map; };
+		mblock-17-spm-reserved { reg = <0 0x77ff0000 0 0x10000>; no-map; };
+		mblock-15-minirdump   { reg = <0 0x48170000 0 0x10000>; no-map; };
+		mblock-14-pstore      { reg = <0 0x48090000 0 0xe0000>; no-map; };
+		mblock-13-ram_console { reg = <0 0x48080000 0 0x10000>; no-map; };
+		mblock-12-picachu     { reg = <0 0xbfd00000 0 0x80000>; no-map; };
+		mblock-11-mcupm-reserved { reg = <0 0x7fb00000 0 0x100000>; no-map; };
+		mblock-10-tee-reserved { reg = <0 0x70000000 0 0x3240000>; no-map; };
+		mblock-9-sspm-reserved { reg = <0 0x7feb0000 0 0x100000>; no-map; };
+		mblock-8-tee-secmem   { reg = <0 0x7fc00000 0 0x200000>; no-map; };
+		mblock-7-atf-log-reserved { reg = <0 0xbfe00000 0 0x40000>; no-map; };
+		mblock-6-atf-ramdump-reserved { reg = <0 0xbff70000 0 0x80000>; no-map; };
+		mblock-5-atf-reserved { reg = <0 0x48c00000 0 0x200000>; no-map; };
+		mblock-4-log_store    { reg = <0 0x7ffbf000 0 0x40000>; };
+		mblock-3-emi_mbist_buf { reg = <0 0x7ffff000 0 0x1000>; no-map; };
+		mblock-1-dramc-rk0    { reg = <0 0xbffff000 0 0x1000>; no-map; };
+		/* only reachable once the full 6 GiB is declared (above 4 GiB) */
+		mblock-2-dramc-rk1    { reg = <0x1 0xbffff000 0 0x1000>; no-map; };
+
+		reserve-memory-scp_share {
+			compatible = "mediatek,reserve-memory-scp_share";
+			no-map;
+			size = <0 0x300000>;
+			alignment = <0 0x1000000>;
+			alloc-ranges = <0 0x50000000 0 0x40000000>;
+		};
+	};
+
+	/*
+	 * NZONE S7 battery. Every number comes from this device's own stock
+	 * node (docs/live-android.dts bat_gm30): R_FG_VALUE 5 mOhm,
+	 * CAR_TUNE 101%, max_fcc 4900 mAh, and the 25 degC OCV curve
+	 * (battery0_profile_t1, resampled to 100 points).
+	 */
+	battery: battery {
+		compatible = "simple-battery";
+		charge-full-design-microamp-hours = <4900000>;
+		factory-internal-resistance-micro-ohms = <120000>;
+		voltage-min-design-microvolt = <3000000>;
+		voltage-max-design-microvolt = <4423000>;
+		ocv-capacity-celsius = <25>;
+		ocv-capacity-table-0 =  					<4423400 100>,
+					<4411600 99>,
+					<4401300 98>,
+					<4391300 97>,
+					<4381400 96>,
+					<4371300 95>,
+					<4361300 94>,
+					<4350900 93>,
+					<4340200 92>,
+					<4329200 91>,
+					<4317900 90>,
+					<4306300 89>,
+					<4294500 88>,
+					<4282500 87>,
+					<4270300 86>,
+					<4258200 85>,
+					<4245900 84>,
+					<4233600 83>,
+					<4221400 82>,
+					<4209200 81>,
+					<4197000 80>,
+					<4184900 79>,
+					<4173100 78>,
+					<4161300 77>,
+					<4149400 76>,
+					<4137900 75>,
+					<4126400 74>,
+					<4115100 73>,
+					<4103900 72>,
+					<4092800 71>,
+					<4081900 70>,
+					<4071400 69>,
+					<4061100 68>,
+					<4050800 67>,
+					<4040600 66>,
+					<4030600 65>,
+					<4021000 64>,
+					<4011300 63>,
+					<4001800 62>,
+					<3992000 61>,
+					<3981600 60>,
+					<3969600 59>,
+					<3955100 58>,
+					<3939500 57>,
+					<3925900 56>,
+					<3915200 55>,
+					<3906200 54>,
+					<3898300 53>,
+					<3891000 52>,
+					<3884200 51>,
+					<3877700 49>,
+					<3871500 48>,
+					<3865700 47>,
+					<3859800 46>,
+					<3854500 45>,
+					<3849300 44>,
+					<3844300 43>,
+					<3839500 42>,
+					<3834900 41>,
+					<3830500 40>,
+					<3826200 39>,
+					<3822100 38>,
+					<3818200 37>,
+					<3814500 36>,
+					<3810900 35>,
+					<3807400 34>,
+					<3804000 33>,
+					<3800500 32>,
+					<3797000 31>,
+					<3793100 30>,
+					<3788600 29>,
+					<3783600 28>,
+					<3778600 27>,
+					<3773700 26>,
+					<3768800 25>,
+					<3763800 24>,
+					<3758900 23>,
+					<3754400 22>,
+					<3750600 21>,
+					<3746700 20>,
+					<3742200 19>,
+					<3736500 18>,
+					<3730000 17>,
+					<3723700 16>,
+					<3717800 15>,
+					<3710600 14>,
+					<3702400 13>,
+					<3697000 12>,
+					<3695300 11>,
+					<3694100 10>,
+					<3692900 9>,
+					<3691200 8>,
+					<3687800 7>,
+					<3676200 6>,
+					<3646300 5>,
+					<3598100 4>,
+					<3533500 3>,
+					<3441100 2>,
+					<3269400 1>,
+					<2962400 0>;
+	};
+};

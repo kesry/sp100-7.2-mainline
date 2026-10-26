@@ -1,0 +1,29 @@
+# build artefacts
+*.o
+*.ko
+*.a
+*.mod
+*.mod.c
+*.cmd
+.tmp_*
+vmlinux
+vmlinux.*
+System.map
+Module.symvers
+.config
+.config.*
+include/config/
+include/generated/
+*.dtb
+*.dtbo
+*.img
+*.bin
+*.simg
+*.gz
+*.xz
+
+# credentials - never commit
+*密钥*
+*token*
+*.pat
+.env
