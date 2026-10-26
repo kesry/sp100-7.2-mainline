@@ -22,41 +22,9 @@ jobs:
 
       - name: Kernel config
         run: |
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
-          scripts/config \
-            --enable ARM64_USE_BUILTIN_DTB \
-            --set-str ARM64_BUILTIN_DTB_NAME "mediatek/mt6833-nzone-gnt-an00" \
-            --enable EXT4_FS \
-            --enable F2FS_FS \
-            --enable SCSI_UFS_MEDIATEK \
-            --enable DRM_MEDIATEK \
-            --enable DRM_PANEL_TRULY_NT35595_NZONE \
-            --enable COMMON_CLK_MT6833 \
-            --enable MTK_SCPSYS_PM_DOMAINS \
-            --enable DRM_PANFROST \
-            --enable KVM \
-            --enable NAMESPACES \
-            --enable USER_NS \
-            --enable CGROUPS \
-            --enable CGROUP_BPF \
-            --enable BPF_SYSCALL \
-            --enable OVERLAY_FS \
-            --enable VETH \
-            --enable BRIDGE \
-            --enable NF_CONNTRACK \
-            --enable NF_NAT \
-            --enable IP_NF_NAT \
-            --enable IP_NF_TARGET_MASQUERADE \
-            --enable KEYS \
-            --enable SECCOMP \
-            --enable SECCOMP_FILTER \
-            --enable CHECKPOINT_RESTORE \
-            --enable TUN \
-            --enable BLK_DEV_DM \
-            --enable DM_CRYPT \
-            --enable NET_CLS_CGROUP \
-            --enable CFS_BANDWIDTH \
-            --enable MEMCG_SWAP
+          # the committed config carries every option the device needs:
+          # display, GPU, KVM, containers (docker/lxc/pve), UFS, networking
+          cp kernel.config .config
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
 
       - name: Build kernel and modules
