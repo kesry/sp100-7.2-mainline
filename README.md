@@ -1,38 +1,33 @@
 # Linux 7.2 for China Mobile NZONE S7 5G (GNT-AN00 / MT6833)
 
-Mainline Linux port for the NZONE S7 5G (GNT-AN00), MediaTek MT6833
-(Dimensity 700), 6 GB RAM, UFS 2.2.
+主线和桌面发行版移植到中国移动 NZONE S7 5G（GNT-AN00，MT6833 / 天玑 700，6 GB RAM，UFS 2.2）。
 
-It boots from the stock LK bootloader as an ordinary header-v2 `boot.img`.
-No bootloader, modem, or other partition is replaced.
+从原厂 LK 引导，使用普通 header v2 格式的 `boot.img` 启动。**不修改 bootloader、modem 或任何其他分区**。
 
-[中文说明](README.zh-CN.md) · [boot image packaging notes](docs/boot-packaging.md)
+[English README](README.en.md) · [boot 镜像打包说明](docs/boot-打包说明.md)
 
-## Status
+## 当前状态
 
-| Area | State |
+| 功能 | 状态 |
 |---|---|
-| Display | native `mediatek-drm`, DSI D-PHY, Truly NT35595 panel, colour correct |
-| GPU | Mali-G57 MC2 via `panfrost`, MFG0..MFG3 power domains |
-| KVM | `/dev/kvm`, runs at EL2 with VHE, GICv3 system-register interface |
-| Wi-Fi | vendor gen4m driver |
-| USB | RNDIS network + ACM serial console |
-| Battery | MT6359 fuel gauge, MT6360 charger |
-| Crash logs | `ramoops` + `pstore` |
+| 显示 | 原生 `mediatek-drm`，DSI D-PHY，Truly NT35595 面板，颜色正确 |
+| GPU | Mali-G57 MC2，`panfrost` 驱动，MFG0..MFG3 电源域 |
+| KVM | `/dev/kvm` 可用，运行在 EL2 + VHE，GICv3 系统寄存器接口 |
+| Wi-Fi | 厂商 gen4m 驱动 |
+| USB | RNDIS 网络 + ACM 串口控制台 |
+| 电池 | MT6359 电量计，MT6360 充电 |
+| 崩溃日志 | `ramoops` + `pstore` |
 
-Not working yet: touchscreen, audio, camera, modem, and the DRM/KMS page-flip
-path used by Wayland compositors (fbcon and direct framebuffer writes work).
+尚未工作：触屏、音频、摄像头、modem、以及 Wayland 合成器使用的 DRM/KMS 页翻转路径（fbcon 和直接写 framebuffer 正常）。
 
-## What this port adds
+## 本移植新增的内容
 
-* `arch/arm64/boot/dts/mediatek/mt6833-nzone-gnt-an00.dts` — device tree
-* `drivers/gpu/drm/panel/panel-truly-nt35595-nzone.c` — panel driver
-* `drivers/pmdomain/mediatek/mt6833-pm-domains.h` — MFG0..MFG3 power domains
-* changes in `mtk_dsi`, `mtk_disp_rdma`, `mtk_drm_drv`, `mtk-mutex`,
-  `mtk-pm-domains`, `panfrost`, the MT6833 clock drivers, the MIPI DSI PHY,
-  `ufs-mediatek` and `mt6397-core`
+- `arch/arm64/boot/dts/mediatek/mt6833-nzone-gnt-an00.dts` — 设备树
+- `drivers/gpu/drm/panel/panel-truly-nt35595-nzone.c` — 面板驱动
+- `drivers/pmdomain/mediatek/mt6833-pm-domains.h` — MFG0..MFG3 电源域
+- 修改了 `mtk_dsi`、`mtk_disp_rdma`、`mtk_drm_drv`、`mtk-mutex`、`mtk-pm-domains`、`panfrost`、MT6833 时钟驱动、MIPI DSI PHY、`ufs-mediatek`、`mt6397-core`
 
-## Building
+## 编译
 
 ```sh
 make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
@@ -41,42 +36,32 @@ scripts/config --set-str ARM64_BUILTIN_DTB_NAME "mediatek/mt6833-nzone-gnt-an00"
 make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- Image modules dtbs
 ```
 
-The DTB is embedded in the kernel image, so after editing the device tree
-remove `arch/arm64/kernel/builtin-dtb.o` before rebuilding, otherwise the old
-blob is reused.
+设备树被编译进内核镜像。修改设备树后必须删掉 `arch/arm64/kernel/builtin-dtb.o` 再重编，否则会复用旧的内置 DTB。
 
-See [boot packaging notes](docs/boot-packaging.md) for the boot image layout,
-cmdline handling and how the root filesystem is located.
+boot 镜像的打包方式、cmdline 与根文件系统定位，见 [boot 打包说明](docs/boot-打包说明.md)。
 
-## Display notes
+## 显示部分说明
 
-The DDP path is the short `RDMA0 -> DSI0` chain. When the driver takes over it
-clears the mutex, so LK's longer pipeline cannot keep compositing its layers
-over ours (that produced a static grey veil on top of everything).
+DDP 路径是短的 `RDMA0 -> DSI0` 链。驱动接管时清除 mutex，这样 LK 那条更长的管线无法继续把它的图层叠加在我们之上（否则会出现一层静态灰色蒙版）。
 
-Panel timing was read back from the registers LK programs:
+面板时序从 LK 配置的寄存器读回：
 
-| | |
+| 项 | 值 |
 |---|---|
-| resolution | 720 x 1600 |
+| 分辨率 | 720 × 1600 |
 | htotal / vtotal | 788 / 1740 |
-| pixel clock | 82,267 kHz → 493.6 Mbps/lane, 4 lanes, RGB888 |
-| blanking | VSA 4, VBP 12, VFP 124 |
-| HS clock | continuous (HSTX_CKLP_EN clear), as LK runs it |
+| 像素时钟 | 82,267 kHz → 493.6 Mbps/lane，4 lane，RGB888 |
+| 消隐 | VSA 4，VBP 12，VFP 124 |
+| HS 时钟 | 连续（HSTX_CKLP_EN 清零），与 LK 一致 |
 
-## GPU notes
+## GPU 部分说明
 
-MFG0 is the only writable MFG domain on this SoC; MFG1..MFG6 do not power up.
-The MT8192-derived SRAM and bus-protection entries are wrong here and are
-dropped for MFG1..MFG3. `domain-supply` must sit on each power-domain child
-node, not on the power-controller.
+MFG0 是本 SoC 上唯一可写的 MFG 电源域，MFG1..MFG6 无法上电。从 MT8192 抄来的 SRAM 和总线保护配置在这里不适用，MFG1..MFG3 已移除。`domain-supply` 必须写在每个 power-domain 子节点上，不能写在电源控制器节点上。
 
-## Credits
+## 致谢
 
-Display and mutex take-over approach follows the
-[a22x-mainline](https://github.com/Dodaskot/a22x-mainline) port for the Samsung
-Galaxy A22 5G (same MT6833 SoC).
+显示与 mutex 接管的方法参考了 [a22x-mainline](https://github.com/Dodaskot/a22x-mainline)（三星 Galaxy A22 5G，同为 MT6833）。
 
-## License
+## 许可
 
-Kernel code is GPL-2.0, matching upstream.
+内核部分遵循 GPL-2.0，与上游一致。
