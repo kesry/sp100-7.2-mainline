@@ -1,10 +1,12 @@
 # Linux 7.2 for China Mobile NZONE S7 5G (GNT-AN00 / MT6833)
 
-Mainline Linux port for the NZONE S7 5G (China Mobile SP100, GNT-AN00),
-MediaTek MT6833 (Dimensity 700), 6 GB RAM, UFS 2.2, EMUI 12 base.
+Mainline Linux port for the NZONE S7 5G (GNT-AN00), MediaTek MT6833
+(Dimensity 700), 6 GB RAM, UFS 2.2.
 
 It boots from the stock LK bootloader as an ordinary header-v2 `boot.img`.
 No bootloader, modem, or other partition is replaced.
+
+[中文说明](README.zh-CN.md) · [boot image packaging notes](docs/boot-packaging.md)
 
 ## Status
 
@@ -32,7 +34,7 @@ path used by Wayland compositors (fbcon and direct framebuffer writes work).
 
 ## Building
 
-```
+```sh
 make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
 scripts/config --enable  ARM64_USE_BUILTIN_DTB
 scripts/config --set-str ARM64_BUILTIN_DTB_NAME "mediatek/mt6833-nzone-gnt-an00"
@@ -42,6 +44,9 @@ make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- Image modules dtbs
 The DTB is embedded in the kernel image, so after editing the device tree
 remove `arch/arm64/kernel/builtin-dtb.o` before rebuilding, otherwise the old
 blob is reused.
+
+See [boot packaging notes](docs/boot-packaging.md) for the boot image layout,
+cmdline handling and how the root filesystem is located.
 
 ## Display notes
 
@@ -68,5 +73,10 @@ node, not on the power-controller.
 
 ## Credits
 
-Display and mutex take-over approach follows the a22x-mainline port for the
-Samsung Galaxy A22 5G (same MT6833 SoC).
+Display and mutex take-over approach follows the
+[a22x-mainline](https://github.com/Dodaskot/a22x-mainline) port for the Samsung
+Galaxy A22 5G (same MT6833 SoC).
+
+## License
+
+Kernel code is GPL-2.0, matching upstream.
