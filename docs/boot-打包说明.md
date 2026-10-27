@@ -125,3 +125,47 @@ tune2fs -L <新卷标> -U <新UUID> <镜像>
 ```
 
 否则两个分区的 UUID 和卷标完全相同，按 UUID/卷标查找时会命中先被扫到的那个，表现为"改了半天还是在启动旧系统"。
+
+## 8. 一键打包（推荐）
+
+打包流程的坑都封进了 `tools/pack-boot.sh`，直接跑就行：
+
+```sh
+tools/pack-boot.sh --expect-root "root=PARTLABEL=userdata" -o out/boot.img
+```
+
+脚本会自动做完并逐项校验：
+
+| 步骤 | 为什么 |
+|---|---|
+| 删掉 `arch/arm64/kernel/builtin-dtb.o` | DTS 改了不删旧对象，编出来的还是旧 DTB |
+| 重新 `make Image` | — |
+| 用 `boot-template/` 的三件套打包 | header / 附加 DTB / AVB tail 必须是原厂字节 |
+| 校验 size == 33,554,432 | 小于分区尺寸会留下旧数据，LK 校验失败变砖 |
+| 校验 header 只有 kernel_size 变化 | 其他字段被改说明打包逻辑有问题 |
+| 校验附加 DTB 与 AVB tail 逐字节等于原厂 | LK 传的是附加 DTB，动了就黑屏重启 |
+| 校验 payload 不越过 0xec6000 | 覆盖 AVB 区会被 LK 拒绝 |
+| 校验内置 DTB 的 `root=` | 与实际要引导的 rootfs 对不上会掉进 recovery |
+| 校验 initramfs 里的身份串 | init 靠 UUID/LABEL 找根分区 |
+
+任何一项不过就 `PACK FAILED` 并且不产出镜像，避免刷到半成品。
+
+模板三件套（`boot-template/`）来自原厂 boot 镜像，**不能重新生成**：
+
+```sh
+# 万一模板损坏，从原厂镜像重新提取
+python3 - <<'PY'
+import struct, zlib
+d = open('factory_boot.img','rb').read()
+page = struct.unpack_from('<I', d, 36)[0]
+ks   = struct.unpack_from('<I', d, 8)[0]
+ds   = struct.unpack_from('<I', d, 0x670)[0]
+off  = page + ((ks+page-1)//page)*page
+open('boot-template/header-2048.bin','wb').write(d[:page])
+open('boot-template/stock-appended.dtb','wb').write(d[off:off+ds])
+open('boot-template/avb-tail.bin.gz','wb').write(zlib.compress(d[0xec6000:], 9))
+PY
+```
+
+注意：这些是二进制文件，**不要**让任何换行符转换工具（CRLF→LF 之类）碰它们，
+曾经因此把 DTB 少 1 字节、把 gzip 压坏的 tail 弄成无法解压。

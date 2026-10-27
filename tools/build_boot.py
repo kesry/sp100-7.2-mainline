@@ -28,7 +28,17 @@ PAGE = 2048
 IMG_SIZE = 32 * 1024 * 1024        # boot partition size
 FOOTER_OFF = 0xEC6000              # AVB footer offset inside the image
 HERE = os.path.dirname(os.path.abspath(__file__))
-TEMPLATE = os.path.join(HERE, "boot-template")
+def _find_template():
+    """boot-template/ may sit next to this script or one level up."""
+    here = os.path.join(HERE, "boot-template")
+    up = os.path.join(HERE, os.pardir, "boot-template")
+    for cand in (here, up):
+        if os.path.isdir(cand):
+            return os.path.abspath(cand)
+    return os.path.abspath(here)
+
+
+TEMPLATE = _find_template()
 
 
 def align(n, a=PAGE):
@@ -43,6 +53,10 @@ def main():
     dtb_override = None
     if "--dtb" in sys.argv:
         dtb_override = sys.argv[sys.argv.index("--dtb") + 1]
+
+    global TEMPLATE
+    if "--template" in sys.argv:
+        TEMPLATE = os.path.abspath(sys.argv[sys.argv.index("--template") + 1])
 
     header = open(os.path.join(TEMPLATE, "header-2048.bin"), "rb").read()
     assert header[:8] == b"ANDROID!", "bad header template"
