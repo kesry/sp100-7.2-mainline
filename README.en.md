@@ -6,22 +6,26 @@ Mainline Linux port for the NZONE S7 5G (GNT-AN00), MediaTek MT6833
 It boots from the stock LK bootloader as an ordinary header-v2 `boot.img`.
 No bootloader, modem, or other partition is replaced.
 
-[中文说明](README.md) · [boot image packaging notes](docs/boot-packaging.md)
+[中文说明](README.md) · [boot image packaging notes](docs/boot-packaging.md) · [GPU bring-up notes](docs/gpu.md)
 
 ## Status
 
 | Area | State |
 |---|---|
 | Display | native `mediatek-drm`, DSI D-PHY, Truly NT35595 panel, colour correct |
-| GPU | Mali-G57 MC2 via `panfrost`, MFG0..MFG3 power domains |
+| GPU | Mali-G57 MC2 via `panfrost`, MFG0..MFG3 power domains; glamor desktop composition works, 390-955 MHz scaling is automatic |
 | KVM | `/dev/kvm`, runs at EL2 with VHE, GICv3 system-register interface |
 | Wi-Fi | vendor gen4m driver |
 | USB | RNDIS network + ACM serial console |
 | Battery | MT6359 fuel gauge, MT6360 charger |
 | Crash logs | `ramoops` + `pstore` |
 
-Not working yet: touchscreen, audio, camera, modem, and the DRM/KMS page-flip
-path used by Wayland compositors (fbcon and direct framebuffer writes work).
+Not working yet: touchscreen (hardware confirmed as Chipone ICNL9911C - the SPI
+link and the power/reset sequence are proven, but the chip sits in ROM boot mode
+without firmware), audio, camera, modem, and the DRM/KMS page-flip path used by
+Wayland compositors (fbcon and direct framebuffer writes work). The PMIC RTC also
+fails to probe for lack of an of_node, so time is kept by `fake-hwclock` plus
+`systemd-timesyncd`.
 
 ## What this port adds
 
@@ -66,10 +70,31 @@ Panel timing was read back from the registers LK programs:
 
 ## GPU notes
 
-MFG0 is the only writable MFG domain on this SoC; MFG1..MFG6 do not power up.
-The MT8192-derived SRAM and bus-protection entries are wrong here and are
-dropped for MFG1..MFG3. `domain-supply` must sit on each power-domain child
-node, not on the power-controller.
+**All four MFG power domains are required.** MFG0/MFG1 are the parent islands and
+must come up before MFG2/MFG3; declaring only the two core domains makes `mfg2`
+report `ON TIMEOUT` and panfrost abort with `Fatal error during GPU init`.
+`domain-supply` must sit on each power-domain child node, not on the
+power-controller.
+
+**The SRAM power bits are the critical part.** `sram_pdn_bits` /
+`sram_pdn_ack_bits` must be enabled for MFG1..MFG3. The Mali job manager lives in
+the always-on part and will happily accept and start a job, but the shader and
+tiler SRAM only leaves power-down when SPM is told which bits to drive. Without
+them every job stays at `JS_STATUS=ACTIVE`, never completes and never reports an
+error - which shows up as a black glamor screen while software rendering is fine.
+**Do not comment those bits out to work around an `ON TIMEOUT`**; that only turns
+a loud power-up failure into a silent execution failure.
+
+**Do not declare `sram-supply`.** The GPU SRAM rail is held on by
+`regulator-always-on`; declaring it as a panfrost supply makes the driver reject
+the device.
+
+Two further issues were fixed along the way: panfrost never re-enables the MMU
+interrupt after runtime resume (an unmapped access then fails silently), and the
+`simple_ondemand` defaults of 45/5 are never reached by compositor workloads -
+they are now 20/10 and exposed as module parameters.
+
+Full analysis, verification method and pitfalls: [GPU bring-up notes](docs/gpu.md).
 
 ## Credits
 
