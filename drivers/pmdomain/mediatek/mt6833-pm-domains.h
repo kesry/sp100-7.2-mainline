@@ -56,8 +56,8 @@ static const struct scpsys_domain_data scpsys_domain_data_mt6833[] = {
 		.ctl_offs = 0x030c,
 		.pwr_sta_offs = 0x016c,
 		.pwr_sta2nd_offs = 0x0170,
-		/* .sram_pdn_bits = GENMASK(8, 8), */
-		/* .sram_pdn_ack_bits = GENMASK(12, 12), */
+		.sram_pdn_bits = GENMASK(8, 8),
+		.sram_pdn_ack_bits = GENMASK(12, 12),
 		.caps = MTK_SCPD_DOMAIN_SUPPLY,
 	},
 	[MT6833_POWER_DOMAIN_MFG2] = {
@@ -66,8 +66,8 @@ static const struct scpsys_domain_data scpsys_domain_data_mt6833[] = {
 		.ctl_offs = 0x0310,
 		.pwr_sta_offs = 0x016c,
 		.pwr_sta2nd_offs = 0x0170,
-		/* .sram_pdn_bits = GENMASK(8, 8), */
-		/* .sram_pdn_ack_bits = GENMASK(12, 12), */
+		.sram_pdn_bits = GENMASK(8, 8),
+		.sram_pdn_ack_bits = GENMASK(12, 12),
 	},
 	[MT6833_POWER_DOMAIN_MFG3] = {
 		.name = "mfg3",
@@ -75,8 +75,8 @@ static const struct scpsys_domain_data scpsys_domain_data_mt6833[] = {
 		.ctl_offs = 0x0314,
 		.pwr_sta_offs = 0x016c,
 		.pwr_sta2nd_offs = 0x0170,
-		/* .sram_pdn_bits = GENMASK(8, 8), */
-		/* .sram_pdn_ack_bits = GENMASK(12, 12), */
+		.sram_pdn_bits = GENMASK(8, 8),
+		.sram_pdn_ack_bits = GENMASK(12, 12),
 	},
 	[MT6833_POWER_DOMAIN_AUDIO] = {
 		.name = "audio",
