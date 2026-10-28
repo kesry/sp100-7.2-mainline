@@ -645,6 +645,37 @@ static irqreturn_t mt6360_pmu_attach_i_handler(int irq, void *data)
 	}
 
 	dev_dbg(mci->dev, "Received attach interrupt, chg_type = %d\n", mci->psy_usb_type);
+
+	/*
+	 * BC1.2 only reports which kind of source is attached; nothing in this
+	 * driver acted on it, so AICR kept the value the bootloader left in the
+	 * register (500 mA) whatever was plugged in. At a low state of charge the
+	 * phone itself draws about that much, so the net current into the battery
+	 * stayed at zero and the battery never charged. Apply the current the
+	 * detected source type is actually allowed to supply.
+	 */
+	{
+		union power_supply_propval aicr = { };
+
+		switch (mci->psy_usb_type) {
+		case POWER_SUPPLY_USB_TYPE_CDP:
+		case POWER_SUPPLY_USB_TYPE_DCP:
+			aicr.intval = 1500000;
+			break;
+		default:
+			aicr.intval = 500000;
+			break;
+		}
+
+		ret = mt6360_charger_set_aicr(mci, &aicr);
+		if (ret)
+			dev_warn(mci->dev, "Failed to set AICR to %d uA: %d\n",
+				 aicr.intval, ret);
+		else
+			dev_info(mci->dev, "AICR set to %d uA for usb type %d\n",
+				 aicr.intval, mci->psy_usb_type);
+	}
+
 	if (last_usb_type != mci->psy_usb_type)
 		power_supply_changed(mci->psy);
 out:
