@@ -38,7 +38,7 @@
 		 * forever (bind returns I/O error, no GNTDBG probe log) and so
 		 * wifi never comes up.
 		 */
-		bootargs = "ignore_loglevel loglevel=8 panic=0 console=tty0 fbcon=nodefer keep_bootcon clk_ignore_unused pd_ignore_unused fw_devlink=off root=UUID=1ba90d08-2fc3-4ce3-b40f-d7b4d6e9f9bc rootfstype=ext4 rw rootwait";
+		bootargs = "ignore_loglevel loglevel=8 panic=0 console=tty0 fbcon=nodefer keep_bootcon clk_ignore_unused pd_ignore_unused fw_devlink=off root=PARTLABEL=userdata rootfstype=ext4 rw rootwait";
 		kaslr-seed = <0 0>;
 
 		fb0: framebuffer@7ed80000 {
@@ -264,7 +264,12 @@
 		interrupt-names = "job", "mmu", "gpu";
 		clocks = <&mfgcfg_ml CLK_MFGCFG_BG3D>;
 		mali-supply = <&mt6359_vproc1_buck_reg>;
-		sram-supply = <&mt6359_vsram_md_ldo_reg>;
+		/*
+		 * All four MFG domains are required: MFG0/MFG1 are the parent
+		 * islands and must be powered before MFG2/MFG3. Declaring only
+		 * the two core domains makes mfg2 hit "ON TIMEOUT" and panfrost
+		 * abort with "Fatal error during GPU init".
+		 */
 		power-domains = <&spm 0>, <&spm 1>, <&spm 2>, <&spm 3>;
 		power-domain-names = "mfg0", "mfg1", "mfg2", "mfg3";
 		operating-points-v2 = <&gpu_opp_table>;
@@ -732,8 +737,14 @@
 
 				mt6359_vsram_md_ldo_reg: ldo_vsram_md {
 					regulator-name = "vsram_gpu";
-					regulator-min-microvolt = <850000>;
-					regulator-max-microvolt = <850000>;
+					/*
+					 * Pinned to the 955 MHz OPP value. The shared
+					 * SRAM rail is not scaled per OPP on this
+					 * chip; pinning it anywhere else leaves the
+					 * GPU unable to retire jobs.
+					 */
+					regulator-min-microvolt = <781250>;
+					regulator-max-microvolt = <781250>;
 					regulator-enable-ramp-delay = <240>;
 					regulator-always-on;
 				};
