@@ -1135,8 +1135,33 @@ static void ufs_mtk_setup_clk_gating(struct ufs_hba *hba)
 static void ufs_mtk_fix_ahit(struct ufs_hba *hba)
 {
 	unsigned int us;
+	u32 dt_us;
 
 	if (ufshcd_is_auto_hibern8_supported(hba)) {
+		/*
+		 * A very short auto-hibern8 timer makes the UniPro link drop
+		 * into Hibernate constantly. On this board the UIC wake-up then
+		 * times out during shutdown:
+		 *
+		 *   ufshcd-mtk 11270000.ufshci: uic error code data link layer
+		 *   ufshcd-mtk 11270000.ufshci: no active uic command maybe a
+		 *                              timeout
+		 *
+		 * The root filesystem becomes unreadable, systemd-shutdown can
+		 * no longer be executed and the machine hangs instead of
+		 * rebooting - every reboot had to be finished by power-cycling
+		 * the phone by hand.
+		 *
+		 * Let the board override the timer; 0 disables auto-hibern8
+		 * entirely, which makes `systemctl reboot` complete cleanly.
+		 */
+		if (!device_property_read_u32(hba->dev,
+					      "mediatek,auto-hibern8-us", &dt_us)) {
+			hba->ahit = dt_us ? ufshcd_us_to_ahit(dt_us) : 0;
+			ufs_mtk_setup_clk_gating(hba);
+			return;
+		}
+
 		switch (hba->dev_info.wmanufacturerid) {
 		case UFS_VENDOR_SAMSUNG:
 			/* configure auto-hibern8 timer to 3.5 ms */

@@ -204,9 +204,33 @@
 			};
 		};
 
-		/* SPI1 bus: the Chipone touch controller sits here (CS = GPIO28) */
+		/*
+		 * SPI1 bus: the Chipone ICNL9911C touch controller sits here.
+		 * Pin assignment and drive strength taken from the factory dtbo:
+		 *   pinmux = <0x1b01 0x1c01 0x1e01 0x1d01>, drive-strength = <3>
+		 * i.e. CLK=27, CSB=28, MI=30, MO=29, all function 1.
+		 */
 		spi1_pins: spi1-pins {
 			pins-bus {
+				/*
+				 * Full SPI1 pin set, from the factory dtbo:
+				 *   pinmux = <0x1b01 0x1c01 0x1e01 0x1d01>
+				 * i.e. CLK=27, CSB=28, MI=30, MO=29, all func 1.
+				 *
+				 * CS stays with the SPI controller: driving it by
+				 * hand needs CONFIG_GPIO_SYSFS (not enabled) or a
+				 * kernel driver, and with CS unmuxed the chip is
+				 * never selected and reads back all zeros.
+				 *
+				 * Do NOT add drive-strength here. The factory dtbo
+				 * has drive-strength = <3>, but that value makes
+				 * mtk_pinconf_drive_set_rev1() fail, and
+				 * pin_config_group_set then aborts the whole group
+				 * before pinmux is written - the pins stay unmuxed
+				 * and the touch controller never sees a clock:
+				 *   mt6833-pinctrl: pin_config_group_set op failed
+				 *                   for group 27
+				 */
 				pinmux = <PINMUX_GPIO27__FUNC_SPI1_CLK>,
 					 <PINMUX_GPIO28__FUNC_SPI1_CSB>,
 					 <PINMUX_GPIO29__FUNC_SPI1_MO>,
@@ -597,6 +621,23 @@
 			compatible = "rohm,dh2228fv";
 			reg = <0>;
 			spi-max-frequency = <8000000>;
+			/*
+			 * The factory driver drives CS itself and waits
+			 * cs_reset_low_delay before clocking and
+			 * cs_reset_high_delay after. Give the controller
+			 * equivalent margins so the chip sees a proper
+			 * setup/hold window around each transfer.
+			 */
+			spi-cs-setup-delay-ns = <1000>;
+			spi-cs-hold-delay-ns = <1000>;
+			spi-cs-inactive-delay-ns = <20000>;
+			/*
+			 * The factory dtbo sets mtk_rx_mlsb = mtk_tx_mlsb = 1,
+			 * so the controller must run LSB first. Without this the
+			 * controller shifts every byte the wrong way round and the
+			 * chip never answers (MISO looks like a floating line).
+			 */
+			spi-lsb-first;
 		};
 	};
 
@@ -735,6 +776,49 @@
 					regulator-enable-ramp-delay = <200>;
 				};
 
+				/*
+				 * TOUCH-POWER-PROBE
+				 *
+				 * The factory dtbo gives the touch controller its own
+				 * rail:
+				 *   fragment@83:  regulator-name = "vtp";
+				 *                 regulator-default-on = <1>;
+				 *   fragment@85:  vtouch-supply = <&vtp>;
+				 * and the mapping table calls it mt_pmic_vtp_ldo_reg,
+				 * i.e. an MT6359 LDO. Mainline has no regulator named
+				 * "vtp", so which LDO Huawei renamed is unknown.
+				 * Enable the disabled 1.8 V candidates and see whether
+				 * the ICNL9911C starts answering on SPI; bisect once
+				 * one of them works.
+				 */
+				ldo_vcamio {
+					regulator-name = "vcamio";
+					regulator-min-microvolt = <1800000>;
+					regulator-max-microvolt = <1800000>;
+					regulator-always-on;
+				};
+
+				ldo_vrf18 {
+					regulator-name = "vrf18";
+					regulator-min-microvolt = <1800000>;
+					regulator-max-microvolt = <1800000>;
+					regulator-always-on;
+				};
+
+				ldo_vsim1 {
+					regulator-name = "vsim1";
+					regulator-min-microvolt = <1800000>;
+					regulator-max-microvolt = <1800000>;
+					regulator-always-on;
+				};
+
+				ldo_vsim2 {
+					regulator-name = "vsim2";
+					regulator-min-microvolt = <1800000>;
+					regulator-max-microvolt = <1800000>;
+					regulator-always-on;
+				};
+
 				mt6359_vsram_md_ldo_reg: ldo_vsram_md {
 					regulator-name = "vsram_gpu";
 					/*
@@ -823,6 +907,13 @@
 		freq-table-hz = <0 0>, <0 0>, <0 0>, <0 0>;
 		lanes-per-direction = <2>;
 		mediatek,ufs-disable-mcq;
+		/*
+		 * Disable auto-hibern8. The driver default is a 1 ms idle
+		 * timeout, which makes the UniPro link drop into Hibernate
+		 * constantly; the UIC wake-up then times out during shutdown and
+		 * the machine hangs instead of rebooting.
+		 */
+		mediatek,auto-hibern8-us = <0>;
 		status = "okay";
 	};
 	ufsphy: ufs-phy@11fa0000 {
