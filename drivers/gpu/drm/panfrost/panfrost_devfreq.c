@@ -84,6 +84,20 @@ static int panfrost_devfreq_get_dev_status(struct device *dev,
 	return 0;
 }
 
+/*
+ * devfreq simple_ondemand tunables, see panfrost_devfreq_init().
+ * upthreshold: load percentage that triggers the highest OPP.
+ * downdifferential: hysteresis below upthreshold before dropping back.
+ */
+static unsigned int panfrost_df_upthreshold = 20;
+module_param_named(upthreshold, panfrost_df_upthreshold, uint, 0644);
+MODULE_PARM_DESC(upthreshold, "simple_ondemand upthreshold in percent (default 20)");
+
+static unsigned int panfrost_df_downdifferential = 10;
+module_param_named(downdifferential, panfrost_df_downdifferential, uint, 0644);
+MODULE_PARM_DESC(downdifferential,
+		 "simple_ondemand downdifferential in percent (default 10)");
+
 static struct devfreq_dev_profile panfrost_devfreq_profile = {
 	.timer = DEVFREQ_TIMER_DELAYED,
 	.polling_ms = 50, /* ~3 frames */
@@ -199,11 +213,19 @@ int panfrost_devfreq_init(struct panfrost_device *pfdev)
 	dev_pm_opp_put(opp);
 
 	/*
-	 * Setup default thresholds for the simple_ondemand governor.
-	 * The values are chosen based on experiments.
+	 * simple_ondemand thresholds. The upstream defaults (45/5) assume the
+	 * GPU is either clearly busy or idle; a desktop compositor instead keeps
+	 * it busy for only a few percent of every 50 ms window, so 45% is never
+	 * reached and the clock would sit at the lowest OPP forever, making the
+	 * GPU look pinned. 20/10 lets it ramp under real load and still fall
+	 * back to minimum when idle.
+	 *
+	 * Both are module parameters so the tradeoff can be retuned without a
+	 * rebuild: echo <n> > /sys/module/panfrost/parameters/upthreshold
+	 * (takes effect after a module reload).
 	 */
-	pfdevfreq->gov_data.upthreshold = 45;
-	pfdevfreq->gov_data.downdifferential = 5;
+	pfdevfreq->gov_data.upthreshold = panfrost_df_upthreshold;
+	pfdevfreq->gov_data.downdifferential = panfrost_df_downdifferential;
 
 	devfreq = devm_devfreq_add_device(dev, &panfrost_devfreq_profile,
 					  DEVFREQ_GOV_SIMPLE_ONDEMAND,
