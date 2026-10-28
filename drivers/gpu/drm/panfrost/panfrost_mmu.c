@@ -341,6 +341,18 @@ void panfrost_mmu_reset(struct panfrost_device *pfdev)
 	struct panfrost_mmu *mmu, *mmu_tmp;
 
 	clear_bit(PANFROST_COMP_BIT_MMU, pfdev->is_suspended);
+	/*
+	 * Runtime suspend masks the MMU interrupt (panfrost_mmu_suspend_irq)
+	 * and nothing ever unmasks it again: panfrost_mmu_init() only requests
+	 * the IRQ. After the first suspend a GPU access to an unmapped address
+	 * therefore fails with no fault interrupt at all - the job silently
+	 * stays ACTIVE and its completion IRQ never arrives.
+	 *
+	 * Re-enable the interrupt here; this runs from panfrost_device_reset(),
+	 * i.e. on probe and on every runtime resume.
+	 */
+	mmu_write(pfdev, MMU_INT_CLEAR, ~0);
+	mmu_write(pfdev, MMU_INT_MASK, ~pfdev->as_faulty_mask);
 
 	spin_lock(&pfdev->as_lock);
 
