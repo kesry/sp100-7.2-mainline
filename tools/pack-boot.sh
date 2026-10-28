@@ -33,7 +33,7 @@
 set -e
 
 WORK=/root/workspace
-LINUX=$WORK/linux
+LINUX=$WORK/publish
 TEMPLATE=$WORK/publish/boot-template
 PACKER=$WORK/publish/tools/build_boot.py
 OUT=$WORK/out/boot_new.img
@@ -77,6 +77,14 @@ for sym in ARM64_USE_BUILTIN_DTB EXT4_FS SCSI_UFS_MEDIATEK; do
     say "  CONFIG_$sym=$v"
 done
 say "  CONFIG_ARM64_BUILTIN_DTB_NAME=$(grep -E '^CONFIG_ARM64_BUILTIN_DTB_NAME=' .config | cut -d'"' -f2)"
+
+say ""
+say "=== 1b. power check (a full rebuild takes 15-25 min) ==="
+if [ -x "$WORK/check_power.sh" ]; then
+    "$WORK/check_power.sh" || { say "  aborted: battery too low for a full build"; exit 1; }
+else
+    say "  check_power.sh not found - skipping"
+fi
 
 say ""
 say "=== 2. rebuild (always drop the stale builtin DTB object) ==="
