@@ -5789,7 +5789,16 @@ static irqreturn_t ufshcd_uic_cmd_compl(struct ufs_hba *hba, u32 intr_status)
 	guard(spinlock_irqsave)(hba->host->host_lock);
 	cmd = hba->active_uic_cmd;
 	if (!cmd) {
-		dev_err(hba->dev,
+		/*
+		 * UFS_UIC_ERR_RATELIMIT
+		 *
+		 * After a UIC command times out its completion interrupts still
+		 * trickle in one by one, and each one lands here with
+		 * active_uic_cmd cleared. On this board that produces thousands
+		 * of identical lines during shutdown and hides whatever real
+		 * error follows, so rate limit it.
+		 */
+		dev_err_ratelimited(hba->dev,
 			"No active UIC command. Maybe a timeout occurred?\n");
 		return retval;
 	}
@@ -7390,15 +7399,30 @@ static irqreturn_t ufshcd_intr(int irq, void *__hba)
 		intr_status = ufshcd_readl(hba, REG_INTERRUPT_STATUS);
 	}
 
+	/*
+	 * UFS_INTR_SPURIOUS_RATELIMIT
+	 *
+	 * A UIC command that timed out leaves its completion interrupt
+	 * asserted. The handler then sees a status it cannot account for and
+	 * returns IRQ_NONE, over and over, dumping sixteen lines of host
+	 * registers every time. On this board that happens during shutdown and
+	 * floods the console (one dump every ~60 ms), hiding the messages that
+	 * actually matter. Rate limit the message and only dump the registers
+	 * for the first occurrence in a while.
+	 */
 	if (enabled_intr_status && retval == IRQ_NONE &&
 	    (!(enabled_intr_status & UTP_TRANSFER_REQ_COMPL) ||
 	     hba->outstanding_reqs) && !ufshcd_eh_in_progress(hba)) {
-		dev_err(hba->dev, "%s: Unhandled interrupt 0x%08x (0x%08x, 0x%08x)\n",
-					__func__,
-					intr_status,
-					last_intr_status,
-					enabled_intr_status);
-		ufshcd_dump_regs(hba, 0, UFSHCI_REG_SPACE_SIZE, "host_regs: ");
+		static DEFINE_RATELIMIT_STATE(intr_rl, 10 * HZ, 3);
+
+		if (__ratelimit(&intr_rl)) {
+			dev_err(hba->dev,
+				"%s: Unhandled interrupt 0x%08x (0x%08x, 0x%08x)\n",
+				__func__, intr_status, last_intr_status,
+				enabled_intr_status);
+			ufshcd_dump_regs(hba, 0, UFSHCI_REG_SPACE_SIZE,
+					 "host_regs: ");
+		}
 	}
 
 	return retval;
@@ -10222,6 +10246,27 @@ static int __ufshcd_wl_suspend(struct ufs_hba *hba, enum ufs_pm_op pm_op)
 		req_dev_pwr_mode = UFS_POWERDOWN_PWR_MODE;
 		req_link_state = UIC_LINK_OFF_STATE;
 	}
+
+	/*
+	 * UFS_SHUTDOWN_SKIP_POWERDOWN
+	 *
+	 * On shutdown the machine is about to reboot or power off, and the
+	 * bootloader re-initialises the UFS device and the UniPro link from
+	 * scratch anyway. Issuing the power-down and link-off UIC/DME command
+	 * sequences here buys nothing, and against this device they
+	 * intermittently time out:
+	 *
+	 *   No active UIC command. Maybe a timeout occurred?
+	 *   Host UIC Error Code (Data Link Layer): 80000001
+	 *   NAC_RECEIVED
+	 *
+	 * the SCSI device goes offline, every shutdown job that still needs
+	 * the root filesystem hangs in D state and the machine never finishes
+	 * rebooting. Skip the device power mode change and the link state
+	 * transition for UFS_SHUTDOWN_PM entirely.
+	 */
+	if (pm_op == UFS_SHUTDOWN_PM)
+		goto vops_suspend;
 
 	/*
 	 * If we can't transition into any of the low power modes

@@ -1832,6 +1832,20 @@ static int ufs_mtk_suspend(struct ufs_hba *hba, enum ufs_pm_op pm_op,
 	struct arm_smccc_res res;
 	struct ufs_mtk_host *host = ufshcd_get_variant(hba);
 
+	/*
+	 * UFS_MTK_SHUTDOWN_SKIP
+	 *
+	 * There is nothing to preserve across a shutdown: the bootloader
+	 * re-initialises the controller. Skipping both the PRE_CHANGE and the
+	 * POST_CHANGE dances avoids the auto-hibern8 disable sequence, the
+	 * UniPro LPM DME_SET, the mphy power-off and the SRAM SMC calls - all
+	 * of which are UIC/SMC commands against a device that may already be
+	 * quiescent, i.e. exactly the commands that time out with NAC_RECEIVED
+	 * during shutdown.
+	 */
+	if (pm_op == UFS_SHUTDOWN_PM)
+		return 0;
+
 	if (status == PRE_CHANGE) {
 		if (ufshcd_is_auto_hibern8_supported(hba))
 			return ufs_mtk_auto_hibern8_disable(hba);
@@ -2030,9 +2044,17 @@ static void ufs_mtk_event_notify(struct ufs_hba *hba,
 
 	trace_ufs_mtk_event(evt, val);
 
-	/* Print details of UIC Errors */
+	/*
+	 * UFS_MTK_EVT_RATELIMIT
+	 *
+	 * A single timed out UIC command produces a stream of late completion
+	 * interrupts; every one of them lands here and prints two or three
+	 * lines. During shutdown that floods the console (thousands of lines,
+	 * tens of milliseconds apart) and pushes the interesting messages off
+	 * the screen and out of the ramoops ring. Rate limit the whole block.
+	 */
 	if (evt <= UFS_EVT_DME_ERR) {
-		dev_info(hba->dev,
+		dev_info_ratelimited(hba->dev,
 			 "Host UIC Error Code (%s): %08x\n",
 			 ufs_uic_err_str[evt], val);
 		reg = val;
@@ -2040,12 +2062,12 @@ static void ufs_mtk_event_notify(struct ufs_hba *hba,
 
 	if (evt == UFS_EVT_PA_ERR) {
 		for_each_set_bit(bit, &reg, ARRAY_SIZE(ufs_uic_pa_err_str))
-			dev_info(hba->dev, "%s\n", ufs_uic_pa_err_str[bit]);
+			dev_info_ratelimited(hba->dev, "%s\n", ufs_uic_pa_err_str[bit]);
 	}
 
 	if (evt == UFS_EVT_DL_ERR) {
 		for_each_set_bit(bit, &reg, ARRAY_SIZE(ufs_uic_dl_err_str))
-			dev_info(hba->dev, "%s\n", ufs_uic_dl_err_str[bit]);
+			dev_info_ratelimited(hba->dev, "%s\n", ufs_uic_dl_err_str[bit]);
 	}
 }
 
