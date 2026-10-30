@@ -10885,6 +10885,29 @@ static void ufshcd_wl_shutdown(struct scsi_device *sdev)
 	scsi_device_quiesce(sdev);
 
 	/*
+	 * UFS_SHUTDOWN_OFFLINE_DATA_LUNS
+	 *
+	 * sdev here is the well-known LUN, not a data device, so quiescing it
+	 * alone does not stop I/O on sda/sdb/sdc. Leaving those live while the
+	 * machine resets produced, on hardware:
+	 *
+	 *   ufshcd-mtk 11270000.ufshci: ufshcd-abort: skipping ...
+	 *   ufshcd-mtk 11270000.ufshci: UPIU[21]_Transfer ...
+	 *   ufshcd-mtk 11270000.ufshci: no active UIC command ...
+	 *
+	 * Put every other SCSI device on this host offline, exactly as the
+	 * original teardown did. Only the power-mode / link / clock / PHY
+	 * sequence below is skipped.
+	 */
+	shost_for_each_device(sdev, hba->host) {
+		if (sdev == hba->ufs_device_wlun)
+			continue;
+		mutex_lock(&sdev->state_mutex);
+		scsi_device_set_state(sdev, SDEV_OFFLINE);
+		mutex_unlock(&sdev->state_mutex);
+	}
+
+	/*
 	 * UFS_SHUTDOWN_QUIESCE_ONLY
 	 *
 	 * Stop here. Do not change the device power mode, do not transition the
