@@ -826,6 +826,40 @@ static int ufs_mtk_setup_clocks(struct ufs_hba *hba, bool on,
 				clk_pwr_off = true;
 		}
 
+		/*
+		 * UFS_MTK_SHUTDOWN_PWR_CTRL_OFF
+		 *
+		 * On shutdown neither branch above can fire on this board, so
+		 * ufs_mtk_pwr_ctrl(hba, false) - the only place that gates the
+		 * reference clock and calls phy_power_off() on the MPHY - was
+		 * never reached:
+		 *
+		 *  - ufshcd_is_link_off() is false because
+		 *    __ufshcd_wl_suspend(UFS_SHUTDOWN_PM) skips the device
+		 *    power-mode change and the link-off transition, and
+		 *  - ufshcd_is_auto_hibern8_enabled() is false because this board
+		 *    sets mediatek,auto-hibern8-us = <0>, i.e. hba->ahit == 0.
+		 *
+		 * The hardware therefore stayed fully alive - MPHY powered, ref
+		 * clock running - at the moment machine_restart() asks PSCI to
+		 * reset the SoC. pstore from a wedged reboot shows exactly this:
+		 *
+		 *   ufshcd-mtk 11270000.ufshci: Clock is not turned off,
+		 *                               hba->ahit = 0x0, AHIT = 0x0
+		 *   reboot: Restarting system
+		 *
+		 * and then nothing until the watchdog fires.
+		 *
+		 * During shutdown there is nothing left to protect: the bootloader
+		 * re-initialises the PHY and the device from scratch. Power the
+		 * PHY down regardless of the link state. Every other caller of
+		 * ufshcd_setup_clocks(..., false) - runtime suspend, clock gating,
+		 * error recovery - keeps the original conservative behaviour
+		 * because hba->shutting_down is only set by ufshcd_wl_shutdown().
+		 */
+		if (READ_ONCE(hba->shutting_down))
+			clk_pwr_off = true;
+
 		if (clk_pwr_off) {
 			ufs_mtk_pwr_ctrl(hba, false);
 		} else {

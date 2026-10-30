@@ -10893,9 +10893,30 @@ static void ufshcd_wl_shutdown(struct scsi_device *sdev)
 	/*
 	 * Next, turn off the UFS controller and the UFS regulators. Disable
 	 * clocks.
+	 *
+	 * UFS_SHUTDOWN_POWER_OFF_CONTROLLER
+	 *
+	 * Do this unconditionally. __ufshcd_wl_suspend(UFS_SHUTDOWN_PM) above
+	 * skips the device power-mode change and the link-off transition, so
+	 * ufshcd_is_ufs_dev_poweroff() and ufshcd_is_link_off() are both still
+	 * false and the original guard
+	 *
+	 *     if (ufshcd_is_ufs_dev_poweroff(hba) && ufshcd_is_link_off(hba))
+	 *
+	 * could never be satisfied. The controller was therefore left fully
+	 * powered - IRQs enabled, clocks running, regulators up, MPHY still in
+	 * high-speed mode - at the moment machine_restart() asks PSCI to reset
+	 * the SoC. That is the state in which the reset intermittently wedges:
+	 * the kernel prints "reboot: Restarting system" and never comes back.
+	 *
+	 * ufshcd_suspend() is safe to call here. It only disables the host IRQ,
+	 * gates the clocks and drops the regulators; it issues no UIC, DME or
+	 * SCSI command, so it cannot time out against a device that is already
+	 * quiescent. By this point systemd-shutdown has unmounted every
+	 * filesystem, remounted the root read-only, run sync and flushed the
+	 * SCSI caches, so cutting the clocks cannot lose data.
 	 */
-	if (ufshcd_is_ufs_dev_poweroff(hba) && ufshcd_is_link_off(hba))
-		ufshcd_suspend(hba);
+	ufshcd_suspend(hba);
 
 	hba->is_powered = false;
 }
