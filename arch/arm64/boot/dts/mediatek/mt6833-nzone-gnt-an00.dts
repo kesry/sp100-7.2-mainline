@@ -1036,12 +1036,36 @@
 		lanes-per-direction = <2>;
 		mediatek,ufs-disable-mcq;
 		/*
-		 * Disable auto-hibern8. The driver default is a 1 ms idle
-		 * timeout, which makes the UniPro link drop into Hibernate
-		 * constantly; the UIC wake-up then times out during shutdown and
-		 * the machine hangs instead of rebooting.
+		 * AH8_RESTORED_STOCK_VALUE
+		 *
+		 * Auto-hibern8 was disabled here earlier, because the driver
+		 * default of 1 ms made the UniPro link drop into Hibernate
+		 * constantly and the UIC wake-up then timed out during shutdown.
+		 *
+		 * That was treating a symptom: the real cause of the shutdown
+		 * stall was the host_sem deadlock between ufshcd_wl_shutdown() and
+		 * ufshcd_err_handler(), fixed separately. With that gone, keeping
+		 * auto-hibern8 off only makes things worse in two ways:
+		 *
+		 *  - ufshcd_is_auto_hibern8_enabled() returns false, so
+		 *    ufs_mtk_setup_clocks() cannot take its normal path to
+		 *    ufs_mtk_pwr_ctrl(hba, false) and the MPHY is left powered
+		 *    unless the shutdown override forces it, and
+		 *
+		 *  - the link stays ACTIVE right up to the moment the PHY is cut,
+		 *    so the controller hands the UFS device to the bootloader in a
+		 *    state the bootloader does not expect. That matches the
+		 *    remaining slow reboots: uptime-at-back is 14 s in both the
+		 *    fast and the slow cycles, so the extra ~95 s is spent before
+		 *    the kernel starts, i.e. in the reset or in LK.
+		 *
+		 * The stock device tree for this board sets
+		 * mediatek,auto-hibern8-timer = <0x0a>, i.e. auto-hibern8 enabled
+		 * with a 10 ms idle timer. Restore that behaviour: 10 ms is long
+		 * enough not to thrash, and it lets the link reach Hibernate8
+		 * before the PHY is powered down.
 		 */
-		mediatek,auto-hibern8-us = <0>;
+		mediatek,auto-hibern8-us = <10000>;
 		status = "okay";
 	};
 	ufsphy: ufs-phy@11fa0000 {
