@@ -806,10 +806,30 @@ static enum drm_gpu_sched_stat panfrost_job_timedout(struct drm_sched_job
 	 * When the GPU component is suspended there is nothing to recover, so
 	 * report no hang and let the job fail without a reset.
 	 */
+	/*
+	 * PANFROST_TIMEOUT_ENODEV
+	 *
+	 * The GPU component being suspended means the block is powered down:
+	 * this job can never complete, because nothing is running to signal
+	 * its fence.
+	 *
+	 * Returning DRM_GPU_SCHED_STAT_NO_HANG here would tell the scheduler
+	 * "false alarm, the GPU is fine": drm_sched_job_timedout() then
+	 * reinserts the job and restarts the timeout, so it fires again in
+	 * another timeout period, forever. drm_sched_entity_flush() keeps
+	 * waiting for a fence that will never be signalled, Xorg cannot exit,
+	 * device_shutdown() never finishes and the machine only comes back
+	 * through the watchdog.
+	 *
+	 * Report ENODEV instead - "the device is not available anymore" - which
+	 * is exactly true here. drm_sched_job_timedout() then neither reinserts
+	 * the job nor restarts the timer, so the flush gives up and the
+	 * shutdown can make progress.
+	 */
 	if (test_bit(PANFROST_COMP_BIT_GPU, pfdev->is_suspended)) {
 		dev_warn(pfdev->base.dev,
-			 "gpu sched timeout while suspended, skipping reset\n");
-		return DRM_GPU_SCHED_STAT_NO_HANG;
+			 "gpu sched timeout while suspended, device is gone\n");
+		return DRM_GPU_SCHED_STAT_ENODEV;
 	}
 
 	dev_err(pfdev->base.dev, "gpu sched timeout, js=%d, config=0x%x, status=0x%x, head=0x%x, tail=0x%x, sched_job=%p",
