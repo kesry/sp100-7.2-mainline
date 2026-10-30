@@ -275,6 +275,28 @@
 		 * and then sees a RST low->high pulse, so the touchpwr module owns
 		 * the line and performs that sequence.
 		 */
+
+		/*
+		 * Release the touch controller from reset at boot.
+		 *
+		 * GPIO15 is the ICNL9911C's reset line. The bootloader leaves it
+		 * low and no driver claims it, so the controller never leaves
+		 * reset and answers nothing on SPI1 - every read returns the
+		 * pull-up level 0x7a instead of real data. Measured on hardware:
+		 *
+		 *   RST low  -> MISO reads 0x7a  (chip held in reset, high-Z)
+		 *   RST high -> MISO reads 0x00  (chip alive, driving the line)
+		 *
+		 * A gpio-hog makes the pinctrl driver request this line itself and
+		 * drive it high at boot, which is what the stock ts_kit driver
+		 * does in its power-on sequence.
+		 */
+		touch-rst-hog {
+			gpio-hog;
+			gpios = <15 GPIO_ACTIVE_HIGH>;
+			output-high;
+			line-name = "touch-rst";
+		};
 	};
 
 	/* Hardware RNG (stock: trng@1020f000) - systemd entropy */
@@ -696,9 +718,19 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&spi1_pins>;
 		/*
-		 * Touch controller reset (stock ts_kit: RST on GPIO15). Exposed
-		 * here so a driver can pulse it - the ICNL9911 only comes up if it
-		 * is powered first and then sees RST low -> high.
+		 * Touch controller reset (stock ts_kit: RST on GPIO15).
+		 *
+		 * NOTE: this property is documentation only. Nothing reads it,
+		 * and nothing drives the line, which is exactly the bug that
+		 * kept the controller in reset: measured on hardware,
+		 *
+		 *   gpioget -c gpiochip0 15   ->  "15"=inactive   (low)
+		 *   RST low  -> MISO reads 0x7a  (chip held in reset, high-Z)
+		 *   RST high -> MISO reads 0x00  (chip alive, driving low)
+		 *
+		 * The line is actually released by the touch-rst-hog node below,
+		 * which makes the pinctrl driver claim GPIO15 at boot and drive it
+		 * high.
 		 */
 		touch-rst-gpios = <&pinctrl 15 GPIO_ACTIVE_HIGH>;
 		#address-cells = <1>;
