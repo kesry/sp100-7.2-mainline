@@ -38,7 +38,24 @@
 		 * forever (bind returns I/O error, no GNTDBG probe log) and so
 		 * wifi never comes up.
 		 */
-		bootargs = "ignore_loglevel loglevel=8 panic=0 console=tty0 fbcon=nodefer keep_bootcon clk_ignore_unused pd_ignore_unused fw_devlink=off root=PARTLABEL=userdata rootfstype=ext4 rw rootwait";
+		/*
+		 * CONSOLE-STORM-FIX
+		 *
+		 * The previous command line combined ignore_loglevel, loglevel=8,
+		 * keep_bootcon and a second console on the USB gadget serial port
+		 * (ttyGS0 at 115200 baud). printk to a console is synchronous and
+		 * serialised by the console lock, and this board's WMT connectivity
+		 * stack emits a 16-line register dump on every RX timeout - roughly
+		 * 50 ms of blocking UART writes per dump, every two seconds, from an
+		 * IRQ-adjacent context. That starves every other CPU of printk and
+		 * makes the machine appear wedged while the WMT storm runs.
+		 *
+		 * ttyGS0 never earned its keep either: the USB gadget is torn down
+		 * before shutdown finishes, so it never captured the reboot logs it
+		 * was added for. Plain tty0 plus warning-level messages is enough,
+		 * and /proc/sys/kernel/printk can still raise the level at runtime.
+		 */
+		bootargs = "loglevel=4 panic=0 console=tty0 fbcon=nodefer clk_ignore_unused pd_ignore_unused fw_devlink=off root=PARTLABEL=userdata rootfstype=ext4 rw rootwait";
 		kaslr-seed = <0 0>;
 
 		fb0: framebuffer@7ed80000 {
@@ -239,6 +256,20 @@
 		};
 
 		/*
+		 * Touch interrupt line (GPIO14, stock pinmux 0xe00 with
+		 * bias-disable in the factory dtbo's eint@0 node). It was left
+		 * unconfigured, so the controller's INT output had nowhere to
+		 * go; several ChipOne parts use INT as a handshake before they
+		 * will answer on SPI.
+		 */
+		touch_int_pins: touch-int-pins {
+			pins-int {
+				pinmux = <PINMUX_GPIO14__FUNC_GPIO14>;
+				bias-disable;
+			};
+		};
+
+		/*
 		 * Touch reset (GPIO15, stock pinmux 0xf00) is NOT hogged here.
 		 * The controller only comes up correctly when it is powered first
 		 * and then sees a RST low->high pulse, so the touchpwr module owns
@@ -247,6 +278,25 @@
 	};
 
 	/* Hardware RNG (stock: trng@1020f000) - systemd entropy */
+	/*
+	 * TOP RGU watchdog. This is what makes `systemctl reboot` work: the
+	 * PSCI SYSTEM_RESET implementation in this device's firmware never
+	 * returns (the kernel freezes inside machine_restart(), the panel stays
+	 * on and the phone has to be power-cycled by hand), so the reset has to
+	 * come from the hardware instead.
+	 *
+	 * mtk_wdt_restart() clears WDT_MODE_IRQ_EN first and then writes the
+	 * SWRST key in a loop - writing the key alone only raises an interrupt
+	 * when the watchdog is in IRQ mode, which is exactly what the
+	 * bootloader leaves behind.
+	 */
+	watchdog: watchdog@10007000 {
+		compatible = "mediatek,mt6589-wdt";
+		reg = <0 0x10007000 0 0x1000>;
+		timeout-sec = <20>;
+		status = "okay";
+	};
+
 	trng: trng@1020f000 {
 		compatible = "mediatek,mt7623-rng";
 		reg = <0 0x1020f000 0 0x1000>;
@@ -547,6 +597,44 @@
 				};
 			};
 
+			/*
+			 * Touch power rail. The factory device tree (extracted from
+			 * lk.img) defines:
+			 *   ldo2 { regulator-name = "VTP";
+			 *          regulator-min-microvolt = <1200000>;
+			 *          regulator-max-microvolt = <3600000>; };
+			 *   mt_pmic_vtp_ldo_reg = "/mt6360_ldo_dts/ldo2";
+			 * i.e. the touch controller's VTP rail is the MT6360 LDO2.
+			 *
+			 * Without this node the regulator core has no constraints for
+			 * LDO2 and regulator_init_complete() disables it at the end of
+			 * boot because nothing claims it - the touch controller then
+			 * sits unpowered and every SPI read returns zero.
+			 *
+			 * Only LDO2 is described here; the bucks are deliberately left
+			 * alone because touching them broke the UFS rails on this
+			 * board before.
+			 */
+			mt6360_reg: regulator {
+				compatible = "mediatek,mt6360-regulator";
+
+				ldo2 {
+					regulator-name = "vtp";
+					/*
+					 * Same range as the factory device tree.
+					 * Pinning min == max would make the core
+					 * reprogram the rail and throw away whatever
+					 * voltage the bootloader had already set, so
+					 * keep the range wide and let the hardware
+					 * value stand.
+					 */
+					regulator-min-microvolt = <1200000>;
+					regulator-max-microvolt = <3600000>;
+					regulator-boot-on;
+					regulator-always-on;
+				};
+			};
+
 			mt6360_tcpc: tcpc {
 				compatible = "mediatek,mt6360-tcpc";
 				interrupts-extended = <&pinctrl 9 IRQ_TYPE_LEVEL_LOW>;
@@ -631,6 +719,8 @@
 			spi-cs-setup-delay-ns = <1000>;
 			spi-cs-hold-delay-ns = <1000>;
 			spi-cs-inactive-delay-ns = <20000>;
+			pinctrl-names = "default";
+			pinctrl-0 = <&touch_int_pins>;
 			/*
 			 * The factory dtbo sets mtk_rx_mlsb = mtk_tx_mlsb = 1,
 			 * so the controller must run LSB first. Without this the
@@ -740,6 +830,32 @@
 			#interrupt-cells = <2>;
 
 			regulators {
+				/*
+				 * UFS I/O rail. The factory device tree defines
+				 * ldo_vufs at 1.7-1.9 V, and the mainline
+				 * mt6359.dtsi has it too, but this board's DTS
+				 * builds its regulators node from scratch and so
+				 * never described it - UFS power therefore depends
+				 * entirely on whatever the bootloader left behind.
+				 *
+				 * If that rail ever drops during shutdown the
+				 * rootfs becomes unreadable, execve of
+				 * /usr/lib/systemd/systemd-shutdown fails with EIO
+				 * and the machine never reboots.
+				 *
+				 * Kept always-on and deliberately NOT wired as
+				 * ufshci's vcc/vccq supply yet: ufs_mtk_vreg_set_lpm()
+				 * then runs an SMC voltage change that has broken the
+				 * UFS rails on this board before. Just holding the
+				 * rail up is what we need.
+				 */
+				mt6359_vufs_ldo_reg: ldo_vufs {
+					regulator-name = "vufs";
+					regulator-min-microvolt = <1700000>;
+					regulator-max-microvolt = <1900000>;
+					regulator-always-on;
+				};
+
 				mt6359_vcn18_ldo_reg: ldo_vcn18 {
 					regulator-name = "vcn18";
 					regulator-min-microvolt = <1800000>;
@@ -750,6 +866,7 @@
 					regulator-name = "vcn13";
 					regulator-min-microvolt = <900000>;
 					regulator-max-microvolt = <1300000>;
+					regulator-always-on;
 				};
 
 				mt6359_vcn33_1_ldo_reg: ldo_vcn33_1 {
@@ -762,6 +879,7 @@
 					regulator-name = "vcn33_2";
 					regulator-min-microvolt = <2800000>;
 					regulator-max-microvolt = <3500000>;
+					regulator-always-on;
 				};
 
 				/*
@@ -791,33 +909,11 @@
 				 * the ICNL9911C starts answering on SPI; bisect once
 				 * one of them works.
 				 */
-				ldo_vcamio {
-					regulator-name = "vcamio";
-					regulator-min-microvolt = <1800000>;
-					regulator-max-microvolt = <1800000>;
-					regulator-always-on;
-				};
 
-				ldo_vrf18 {
-					regulator-name = "vrf18";
-					regulator-min-microvolt = <1800000>;
-					regulator-max-microvolt = <1800000>;
-					regulator-always-on;
-				};
 
-				ldo_vsim1 {
-					regulator-name = "vsim1";
-					regulator-min-microvolt = <1800000>;
-					regulator-max-microvolt = <1800000>;
-					regulator-always-on;
-				};
 
-				ldo_vsim2 {
-					regulator-name = "vsim2";
-					regulator-min-microvolt = <1800000>;
-					regulator-max-microvolt = <1800000>;
-					regulator-always-on;
-				};
+
+
 
 				mt6359_vsram_md_ldo_reg: ldo_vsram_md {
 					regulator-name = "vsram_gpu";
@@ -970,6 +1066,21 @@
 		vcn33_1_bt-supply = <&mt6359_vcn33_1_ldo_reg>;
 		vcn33_1_wifi-supply = <&mt6359_vcn33_1_ldo_reg>;
 		vcn33_2_wifi-supply = <&mt6359_vcn33_2_ldo_reg>;
+		/*
+		 * The out-of-tree connectivity stack (wmt_drv) does:
+		 *
+		 *   pmic_node = of_parse_phandle(pdev->dev.of_node, "pmic", 0);
+		 *   pmic_pdev = of_find_device_by_node(pmic_node);
+		 *   chip      = dev_get_drvdata(&pmic_pdev->dev);
+		 *   g_regmap  = chip->regmap;
+		 *
+		 * and without this phandle it logs "get pmic_node fail" followed
+		 * by "no MT6359 regmap", so it cannot drive the connectivity LDO
+		 * hardware voters (VCN13 / VCN18 / VCN33_1 / VCN33_2 / VFE28).
+		 * With no regmap the WMT power-on path degrades and Wi-Fi scans
+		 * fail with error c0010011.
+		 */
+		pmic = <&mt6359>;
 		status = "okay";
 	};
 	wifi: wifi@18000000 {
