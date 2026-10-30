@@ -787,6 +787,31 @@ static enum drm_gpu_sched_stat panfrost_job_timedout(struct drm_sched_job
 		return DRM_GPU_SCHED_STAT_NO_HANG;
 	}
 
+	/*
+	 * PANFROST_NO_RESET_WHEN_SUSPENDED
+	 *
+	 * A job can time out while the GPU is already powered down. Resetting
+	 * a powered-off GPU is guaranteed to time out: panfrost_gpu_soft_reset()
+	 * polls GPU_INT_RAWSTAT for GPU_IRQ_RESET_COMPLETED and the block never
+	 * answers. panfrost_reset() then resubmits the job and restarts the
+	 * scheduler, the job times out again, and the whole cycle repeats
+	 * forever - each round printing "gpu soft reset timed out, attempting
+	 * hard reset" plus a full core dump.
+	 *
+	 * Observed on GNT-AN00 during shutdown: the console is flooded with
+	 * that message for the whole reboot, which pushes everything useful out
+	 * of the ramoops ring, and the shutdown never completes so the watchdog
+	 * has to force a cold reset.
+	 *
+	 * When the GPU component is suspended there is nothing to recover, so
+	 * report no hang and let the job fail without a reset.
+	 */
+	if (test_bit(PANFROST_COMP_BIT_GPU, pfdev->is_suspended)) {
+		dev_warn(pfdev->base.dev,
+			 "gpu sched timeout while suspended, skipping reset\n");
+		return DRM_GPU_SCHED_STAT_NO_HANG;
+	}
+
 	dev_err(pfdev->base.dev, "gpu sched timeout, js=%d, config=0x%x, status=0x%x, head=0x%x, tail=0x%x, sched_job=%p",
 		js,
 		job_read(pfdev, JS_CONFIG(js)),

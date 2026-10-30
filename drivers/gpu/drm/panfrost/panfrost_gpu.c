@@ -64,6 +64,16 @@ int panfrost_gpu_soft_reset(struct panfrost_device *pfdev)
 	int ret;
 	u32 val;
 
+	/*
+	 * PANFROST_SOFT_RESET_SKIP_WHEN_SUSPENDED
+	 *
+	 * Resetting a powered-off GPU can only time out - see the longer note
+	 * in panfrost_job_timedout(). Keep the poll below from spinning when
+	 * the block cannot answer.
+	 */
+	if (test_bit(PANFROST_COMP_BIT_GPU, pfdev->is_suspended))
+		return 0;
+
 	gpu_write(pfdev, GPU_INT_MASK, 0);
 	gpu_write(pfdev, GPU_INT_CLEAR, GPU_IRQ_RESET_COMPLETED);
 
