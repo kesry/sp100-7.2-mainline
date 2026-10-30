@@ -333,8 +333,33 @@ static int mtk_wdt_start(struct watchdog_device *wdt_dev)
 		reg |= (WDT_MODE_IRQ_EN | WDT_MODE_DUAL_EN);
 	else
 		reg &= ~(WDT_MODE_IRQ_EN | WDT_MODE_DUAL_EN);
+	/*
+	 * MTK_WDT_ENABLE_EXTRST
+	 *
+	 * Set EXRST_EN unless the board explicitly disabled it.
+	 *
+	 * The previous code only ever *cleared* this bit, never set it. Since
+	 * arch/arm64/kernel/setup.c clears WDT_MODE outright at boot
+	 * (CONFIG_MT6833_DISABLE_WDT) and mtk_wdt_start() then only ORs in
+	 * EN, the register ended up as:
+	 *
+	 *   WDT_MODE = 0x00000001     EN=1, EXRST_EN=0
+	 *
+	 * measured on hardware with a /dev/mem peek. With EXRST_EN clear the
+	 * TOP RGU never asserts the external system reset, so an expired
+	 * watchdog cannot reset the SoC at all - which is why a wedged
+	 * machine_restart() stayed wedged forever even though the watchdog
+	 * looked armed.
+	 *
+	 * The stock bootloader leaves WDT_MODE = 0x7d
+	 * (EN | EXRST_EN | IRQ_EN | AUTO_START | bit5 | DUAL_EN), i.e. with
+	 * EXRST_EN set, and that is the only configuration with evidence of
+	 * actually resetting this SoC.
+	 */
 	if (mtk_wdt->disable_wdt_extrst)
 		reg &= ~WDT_MODE_EXRST_EN;
+	else
+		reg |= WDT_MODE_EXRST_EN;
 	if (mtk_wdt->reset_by_toprgu)
 		reg |= WDT_MODE_CNT_SEL;
 	reg |= (WDT_MODE_EN | WDT_MODE_KEY);
@@ -447,7 +472,44 @@ static int mtk_wdt_probe(struct platform_device *pdev)
 
 	mtk_wdt_init(&mtk_wdt->wdt_dev);
 
-	watchdog_stop_on_reboot(&mtk_wdt->wdt_dev);
+	/*
+	 * MTK_WDT_KEEP_ARMED_ON_REBOOT
+	 *
+	 * Deliberately NOT calling watchdog_stop_on_reboot().
+	 *
+	 * That helper registers a reboot notifier that calls ->stop() when it
+	 * sees SYS_DOWN - and SYS_RESTART is literally defined as SYS_DOWN in
+	 * include/linux/reboot.h, so it fires on every reboot, not only on
+	 * poweroff. mtk_wdt_stop() then clears WDT_MODE_EN and the watchdog is
+	 * disarmed before machine_restart() is even reached.
+	 *
+	 * That is fatal here, because machine_restart() ends in
+	 * do_kernel_restart(), and the second handler in that chain -
+	 * mtk_wdt_restart(), priority 128 below PSCI's 129 - is an infinite
+	 * loop:
+	 *
+	 *     while (1) {
+	 *             writel(WDT_SWRST_KEY, wdt_base + WDT_SWRST);
+	 *             mdelay(5);
+	 *     }
+	 *
+	 * It only clears WDT_MODE_IRQ_EN, never re-arms EN. So when the PSCI
+	 * SYSTEM_RESET call returns instead of resetting the SoC, the kernel
+	 * spins in that loop with the watchdog already switched off and nothing
+	 * left that can reset the machine. "Reboot failed -- System halted" is
+	 * never printed because the loop never exits.
+	 *
+	 * Leaving the watchdog armed makes that fallback work: the PSCI call
+	 * still gets the first shot at a fast reset, and if it fails the TOP
+	 * RGU expires a few seconds later and resets the SoC. Combined with
+	 * EXRST_EN being set in mtk_wdt_start(), which the driver previously
+	 * only ever cleared, the watchdog can now actually assert the external
+	 * system reset.
+	 *
+	 * This is safe for data: systemd-shutdown only reaches
+	 * machine_restart() after unmounting every filesystem, remounting the
+	 * root read-only, syncing and flushing the SCSI caches.
+	 */
 	watchdog_stop_ping_on_suspend(&mtk_wdt->wdt_dev);
 	err = devm_watchdog_register_device(dev, &mtk_wdt->wdt_dev);
 	if (unlikely(err))
