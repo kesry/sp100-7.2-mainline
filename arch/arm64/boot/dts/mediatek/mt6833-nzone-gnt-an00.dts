@@ -55,7 +55,7 @@
 		 * was added for. Plain tty0 plus warning-level messages is enough,
 		 * and /proc/sys/kernel/printk can still raise the level at runtime.
 		 */
-		bootargs = "loglevel=4 panic=0 console=tty0 fbcon=nodefer clk_ignore_unused pd_ignore_unused fw_devlink=off root=PARTLABEL=userdata rootfstype=ext4 rw rootwait";
+		bootargs = "reboot=warm loglevel=4 panic=0 console=tty0 fbcon=nodefer clk_ignore_unused pd_ignore_unused fw_devlink=off root=PARTLABEL=userdata rootfstype=ext4 rw rootwait";
 		kaslr-seed = <0 0>;
 
 		fb0: framebuffer@7ed80000 {
@@ -253,6 +253,7 @@
 					 <PINMUX_GPIO29__FUNC_SPI1_MO>,
 					 <PINMUX_GPIO30__FUNC_SPI1_MI>;
 			};
+
 		};
 
 		/*
@@ -628,6 +629,18 @@
 					 * voltage the bootloader had already set, so
 					 * keep the range wide and let the hardware
 					 * value stand.
+					 */
+					/*
+					 * TOUCH_VTP_3V0
+					 *
+					 * Diagnostic: pin the rail to 3.0 V so the
+					 * regulator core actually programs it instead
+					 * of keeping whatever the bootloader left
+					 * (measured: 1.8 V). ChipOne parts normally
+					 * run their VDD at 2.8-3.3 V and the Android
+					 * driver raises the rail in its power-on
+					 * sequence, so 1.8 V may simply be the
+					 * pre-init value LK leaves behind.
 					 */
 					regulator-min-microvolt = <1200000>;
 					regulator-max-microvolt = <3600000>;
