@@ -10920,6 +10920,27 @@ static void ufshcd_wl_shutdown(struct scsi_device *sdev)
 	 */
 	ufshcd_suspend(hba);
 
+	/*
+	 * UFS_HANDOFF_DIAG
+	 *
+	 * Record the controller state we hand to the bootloader. A reboot
+	 * sometimes wedges inside machine_restart() (PSCI SYSTEM_RESET never
+	 * returns) and the watchdog then forces a cold reset, so pstore from
+	 * the next boot shows what the last shutdown looked like. Comparing
+	 * this line between a fast reboot and a wedged one tells us whether
+	 * the UFS controller was left in a state that matters, rather than
+	 * guessing from the absence of UIC errors.
+	 */
+	dev_err(hba->dev,
+		 "handoff: HCS=0x%08x HCE=0x%08x IS=0x%08x link=%s powered=%d\n",
+		 ufshcd_readl(hba, REG_CONTROLLER_STATUS),
+		 ufshcd_readl(hba, REG_CONTROLLER_ENABLE),
+		 ufshcd_readl(hba, REG_INTERRUPT_STATUS),
+		 ufshcd_is_link_active(hba) ? "active" :
+		 ufshcd_is_link_hibern8(hba) ? "hibern8" :
+		 ufshcd_is_link_off(hba) ? "off" : "unknown",
+		 hba->is_powered);
+
 	hba->is_powered = false;
 }
 
