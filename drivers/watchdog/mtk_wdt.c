@@ -547,8 +547,25 @@ static int mtk_wdt_probe(struct platform_device *pdev)
 	 * watchdog ->restart so that TOP RGU runs before the PSCI firmware
 	 * call rather than after it.
 	 */
+	/*
+	 * MTK_WDT_RESTART_AFTER_PSCI
+	 *
+	 * Register the TOP RGU restart handler just below psci_sys_reset's
+	 * priority of 129, so the intended order is: PSCI gets the first
+	 * attempt at a fast reset, TOP RGU resets the SoC if it fails.
+	 *
+	 * priority 192 (SYS_OFF_PRIO_HIGH) was tried first and does stop the
+	 * wedging, but it makes every reboot a cold reset because TOP RGU
+	 * reinitialises DRAM - ~56 s instead of ~32 s. Running PSCI first
+	 * keeps the fast path and leaves the watchdog as a fallback, which is
+	 * what it should be.
+	 *
+	 * This only works because reboot=warm makes psci_sys_reset() issue
+	 * SYSTEM_RESET2 instead of SYSTEM_RESET; the latter is the call that
+	 * intermittently never returns on this board.
+	 */
 	err = devm_register_sys_off_handler(dev, SYS_OFF_MODE_RESTART,
-					    SYS_OFF_PRIO_HIGH,
+					    100,
 					    mtk_wdt_high_prio_restart, NULL);
 	if (err) {
 		dev_warn(dev, "failed to register high priority restart handler: %d\n",
