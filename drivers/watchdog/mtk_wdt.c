@@ -30,6 +30,7 @@
 #include <linux/reset-controller.h>
 #include <linux/types.h>
 #include <linux/watchdog.h>
+#include <linux/reboot.h>
 #include <linux/interrupt.h>
 
 #define WDT_MAX_TIMEOUT		31
@@ -250,6 +251,31 @@ static int mtk_wdt_restart(struct watchdog_device *wdt_dev,
 	}
 
 	return 0;
+}
+
+/*
+ * MTK_WDT_HIGH_PRIO_RESTART
+ *
+ * machine_restart() -> do_kernel_restart() walks the restart notifier chain in
+ * descending priority order. PSCI registers psci_sys_reset at priority 129,
+ * and the watchdog core registers this driver's ->restart at
+ * SYS_OFF_PRIO_DEFAULT (0) - so the firmware call always gets the first shot.
+ *
+ * On this board that firmware call intermittently never returns: the kernel
+ * sits inside the SMC, "Reboot failed -- System halted" is never printed
+ * because mtk_wdt_restart()'s loop is never reached, the watchdog has already
+ * been poked by systemd-shutdown, and the machine only comes back when
+ * somebody holds the power button.
+ *
+ * mtk_wdt_restart() itself cannot get stuck - it writes WDT_SWRST in a loop -
+ * so run it *before* PSCI instead of after it. SYS_OFF_PRIO_HIGH (192) beats
+ * psci_sys_reset's 129. Combined with EXRST_EN being set in mtk_wdt_start(),
+ * TOP RGU can actually assert the external system reset.
+ */
+static int mtk_wdt_high_prio_restart(struct sys_off_data *data)
+{
+	mtk_wdt_restart(NULL, 0, NULL);
+	return NOTIFY_DONE;   /* not reached */
 }
 
 static int mtk_wdt_ping(struct watchdog_device *wdt_dev)
@@ -514,6 +540,22 @@ static int mtk_wdt_probe(struct platform_device *pdev)
 	err = devm_watchdog_register_device(dev, &mtk_wdt->wdt_dev);
 	if (unlikely(err))
 		return err;
+
+	/*
+	 * MTK_WDT_HIGH_PRIO_RESTART - see the comment on
+	 * mtk_wdt_high_prio_restart(). Registered in addition to the generic
+	 * watchdog ->restart so that TOP RGU runs before the PSCI firmware
+	 * call rather than after it.
+	 */
+	err = devm_register_sys_off_handler(dev, SYS_OFF_MODE_RESTART,
+					    SYS_OFF_PRIO_HIGH,
+					    mtk_wdt_high_prio_restart, NULL);
+	if (err) {
+		dev_warn(dev, "failed to register high priority restart handler: %d\n",
+			 err);
+	} else {
+		dev_info(dev, "registered high priority restart handler\n");
+	}
 
 	dev_info(dev, "Watchdog enabled (timeout=%d sec, nowayout=%d)\n",
 		 mtk_wdt->wdt_dev.timeout, nowayout);
