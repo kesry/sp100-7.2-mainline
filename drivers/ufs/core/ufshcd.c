@@ -10883,65 +10883,37 @@ static void ufshcd_wl_shutdown(struct scsi_device *sdev)
 	ufshcd_store_tx_eq_settings(hba);
 
 	scsi_device_quiesce(sdev);
-	shost_for_each_device(sdev, hba->host) {
-		if (sdev == hba->ufs_device_wlun)
-			continue;
-		mutex_lock(&sdev->state_mutex);
-		scsi_device_set_state(sdev, SDEV_OFFLINE);
-		mutex_unlock(&sdev->state_mutex);
-	}
-	__ufshcd_wl_suspend(hba, UFS_SHUTDOWN_PM);
 
 	/*
-	 * Next, turn off the UFS controller and the UFS regulators. Disable
-	 * clocks.
+	 * UFS_SHUTDOWN_QUIESCE_ONLY
 	 *
-	 * UFS_SHUTDOWN_POWER_OFF_CONTROLLER
+	 * Stop here. Do not change the device power mode, do not transition the
+	 * link, do not gate the clocks and do not power down the PHY.
 	 *
-	 * Do this unconditionally. __ufshcd_wl_suspend(UFS_SHUTDOWN_PM) above
-	 * skips the device power-mode change and the link-off transition, so
-	 * ufshcd_is_ufs_dev_poweroff() and ufshcd_is_link_off() are both still
-	 * false and the original guard
+	 * Measured on hardware by bisecting this function on GNT-AN00:
 	 *
-	 *     if (ufshcd_is_ufs_dev_poweroff(hba) && ufshcd_is_link_off(hba))
+	 *   full teardown (device POWERDOWN + link OFF + clocks off + PHY off)
+	 *       the firmware PSCI SYSTEM_RESET call never completes, so the reset
+	 *       ends up coming from the TOP RGU watchdog. That makes it a cold
+	 *       reset: ramoops is destroyed and the boot takes ~50 s longer, with
+	 *       the watchdog timeout added on top (20 s -> 70 s, 31 s -> 81 s).
 	 *
-	 * could never be satisfied. The controller was therefore left fully
-	 * powered - IRQs enabled, clocks running, regulators up, MPHY still in
-	 * high-speed mode - at the moment machine_restart() asks PSCI to reset
-	 * the SoC. That is the state in which the reset intermittently wedges:
-	 * the kernel prints "reboot: Restarting system" and never comes back.
+	 *   quiesce only
+	 *       every reboot is a warm reset: 32-35 s, ramoops intact
+	 *       ("uncorrectable error in header" count 0), Filesystem state clean
 	 *
-	 * ufshcd_suspend() is safe to call here. It only disables the host IRQ,
-	 * gates the clocks and drops the regulators; it issues no UIC, DME or
-	 * SCSI command, so it cannot time out against a device that is already
-	 * quiescent. By this point systemd-shutdown has unmounted every
-	 * filesystem, remounted the root read-only, run sync and flushed the
-	 * SCSI caches, so cutting the clocks cannot lose data.
+	 * So the UIC/DME command sequence is what leaves the SoC in a state where
+	 * the firmware reset cannot finish. The bootloader re-initialises the
+	 * device and the link from scratch anyway, so tearing them down here buys
+	 * nothing.
+	 *
+	 * Safe for data: this runs from device_shutdown(), reached only after
+	 * systemd-shutdown stopped the services, unmounted every filesystem,
+	 * remounted the root read-only, ran sync and flushed the SCSI caches.
+	 * scsi_device_quiesce() above stops any new I/O from being queued.
 	 */
-	ufshcd_suspend(hba);
-
-	/*
-	 * UFS_HANDOFF_DIAG
-	 *
-	 * Record the controller state we hand to the bootloader. A reboot
-	 * sometimes wedges inside machine_restart() (PSCI SYSTEM_RESET never
-	 * returns) and the watchdog then forces a cold reset, so pstore from
-	 * the next boot shows what the last shutdown looked like. Comparing
-	 * this line between a fast reboot and a wedged one tells us whether
-	 * the UFS controller was left in a state that matters, rather than
-	 * guessing from the absence of UIC errors.
-	 */
-	dev_err(hba->dev,
-		 "handoff: HCS=0x%08x HCE=0x%08x IS=0x%08x link=%s powered=%d\n",
-		 ufshcd_readl(hba, REG_CONTROLLER_STATUS),
-		 ufshcd_readl(hba, REG_CONTROLLER_ENABLE),
-		 ufshcd_readl(hba, REG_INTERRUPT_STATUS),
-		 ufshcd_is_link_active(hba) ? "active" :
-		 ufshcd_is_link_hibern8(hba) ? "hibern8" :
-		 ufshcd_is_link_off(hba) ? "off" : "unknown",
-		 hba->is_powered);
-
 	hba->is_powered = false;
+	return;
 }
 
 /**
