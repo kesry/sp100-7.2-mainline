@@ -10248,25 +10248,27 @@ static int __ufshcd_wl_suspend(struct ufs_hba *hba, enum ufs_pm_op pm_op)
 	}
 
 	/*
-	 * UFS_SHUTDOWN_SKIP_POWERDOWN
+	 * UFS_SHUTDOWN_KEEP_DEVICE_POWERDOWN
 	 *
-	 * On shutdown the machine is about to reboot or power off, and the
-	 * bootloader re-initialises the UFS device and the UniPro link from
-	 * scratch anyway. Issuing the power-down and link-off UIC/DME command
-	 * sequences here buys nothing, and against this device they
-	 * intermittently time out:
+	 * The device power mode change below used to be skipped for
+	 * UFS_SHUTDOWN_PM, because against this device it intermittently timed
+	 * out with:
 	 *
 	 *   No active UIC command. Maybe a timeout occurred?
 	 *   Host UIC Error Code (Data Link Layer): 80000001
 	 *   NAC_RECEIVED
 	 *
-	 * the SCSI device goes offline, every shutdown job that still needs
-	 * the root filesystem hangs in D state and the machine never finishes
-	 * rebooting. Skip the device power mode change and the link state
-	 * transition for UFS_SHUTDOWN_PM entirely.
+	 * That was not a property of the power-down sequence itself: it was the
+	 * host_sem deadlock between ufshcd_wl_shutdown() and
+	 * ufshcd_err_handler(), fixed separately by setting hba->shutting_down
+	 * before taking the semaphore. With the deadlock gone the sequence
+	 * completes and pstore shows no UIC or NAC error at all.
+	 *
+	 * Skipping it left the UFS *device* in ACTIVE power mode while the PHY
+	 * was being cut underneath it, which is not a state the bootloader
+	 * expects to inherit. Let the device go to POWERDOWN and the link to
+	 * OFF, so the handoff to LK is the standard one.
 	 */
-	if (pm_op == UFS_SHUTDOWN_PM)
-		goto vops_suspend;
 
 	/*
 	 * If we can't transition into any of the low power modes
