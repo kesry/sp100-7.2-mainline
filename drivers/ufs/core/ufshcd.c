@@ -10828,12 +10828,55 @@ static void ufshcd_wl_shutdown(struct scsi_device *sdev)
 {
 	struct ufs_hba *hba = shost_priv(sdev->host);
 
+	/*
+	 * UFS_SHUTDOWN_SET_FLAG_FIRST
+	 *
+	 * Set shutting_down before taking host_sem, not after.
+	 *
+	 * ufshcd_err_handler() holds host_sem for the whole recovery: it runs
+	 * ufshcd_quirk_dl_nac_errors(), ufshcd_abort_all() and
+	 * ufshcd_reset_and_restore(), and loops up to MAX_ERR_HANDLER_RETRIES
+	 * times. Every UIC command inside those paths can block for seconds,
+	 * so with a persistent NAC_RECEIVED storm the handler can hold the
+	 * semaphore for minutes.
+	 *
+	 * ufshcd_err_handling_should_stop() bails out early when
+	 * hba->shutting_down is set - but the old order made that impossible
+	 * to reach: shutdown blocked in down(&hba->host_sem) waiting for the
+	 * error handler, while the error handler needed shutting_down to be
+	 * set before it would stop. down() is an uninterruptible sleep with
+	 * no timeout, so systemctl reboot stalled here forever and
+	 * device_shutdown() never reached the next device, let alone
+	 * machine_restart() where the watchdog could have helped.
+	 *
+	 * Setting the flag first breaks the cycle: the running error handler
+	 * notices it at its next ufshcd_err_handling_should_stop() check and
+	 * releases the semaphore promptly.
+	 */
+	WRITE_ONCE(hba->shutting_down, true);
+
 	down(&hba->host_sem);
-	hba->shutting_down = true;
 	up(&hba->host_sem);
 
-	/* Turn on everything while shutting down */
-	ufshcd_rpm_get_sync(hba);
+	/*
+	 * UFS_SHUTDOWN_SKIP_RPM_WAKE
+	 *
+	 * Do not bring the controller back up just to shut it down again.
+	 *
+	 * ufshcd_rpm_get_sync() resumes the device, and if the link had been
+	 * suspended that runs the whole __ufshcd_wl_resume() sequence:
+	 * ufshcd_uic_hibern8_exit(), ufshcd_set_dev_pwr_mode(),
+	 * ufshcd_link_startup() - a burst of UIC commands against a device
+	 * that is on its way out. Every one of them can time out, which is
+	 * exactly the "NAC_RECEIVED / No active UIC command" stall seen on
+	 * every reboot before the reset happens.
+	 *
+	 * The resume buys nothing: the next thing this function does is
+	 * __ufshcd_wl_suspend(UFS_SHUTDOWN_PM), and our suspend callback
+	 * returns immediately for that pm_op anyway. The registers this
+	 * function still touches after this point only need the controller
+	 * clocks, which are running as long as hba->is_powered is set.
+	 */
 
 	ufshcd_store_tx_eq_settings(hba);
 
