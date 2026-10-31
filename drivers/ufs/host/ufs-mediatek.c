@@ -11,6 +11,9 @@
 #include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/module.h>
+#include <linux/regmap.h>
+#include <linux/mfd/syscon.h>
+#include <linux/iopoll.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_device.h>
@@ -341,6 +344,9 @@ static int ufs_mtk_bind_mphy(struct ufs_hba *hba)
 
 static int ufs_mtk_setup_ref_clk(struct ufs_hba *hba, bool on)
 {
+	dev_warn(hba->dev, "UFS_TRACE: ref_clk %s\n", on ? "on" : "off");
+	dev_warn(hba->dev, "UFS_TRACE: ref_clk %s\n", on ? "on" : "off");
+	pr_info("UFS_TRACE: ref_clk %s\n", on ? "on" : "off");
 	struct ufs_mtk_host *host = ufshcd_get_variant(hba);
 	struct arm_smccc_res res;
 	ktime_t timeout, time_checked;
@@ -744,6 +750,64 @@ static void ufs_mtk_pwr_ctrl(struct ufs_hba *hba, bool on)
 		ufs_mtk_setup_ref_clk(hba, on);
 		phy_power_off(host->mphy);
 	}
+}
+
+/*
+ * UFS_SPM_REQUEST_OCCUPATION
+ *
+ * The SPM/MCUPM firmware gates infrastructure resources during idle windows
+ * based on its request bitmap (SPM_SRC_REQ_STA0, bits 14:10). The stock
+ * kernel registers the UFS occupancy through this protocol; without the
+ * registration the firmware treats the UFS clock domain as unused and can
+ * cut it while the host controller is live, which kills the controller
+ * mid-operation (state divergence, orphaned requests, HCE unresponsive).
+ *
+ * Read the request status, re-assert the device-side request through
+ * XOUFS_ST, and verify the SPM bitmap follows. Diagnostic and static
+ * occupation in one step; runs once at probe.
+ */
+#define UFS_SPM_SRC_REQ_STA0		0x118
+#define UFS_SPM_UFS_REQ_MASK		GENMASK(14, 10)
+#define UFS_SPM_UFS_REQ_BOOT		0x2c00
+#define UFS_XOUFS_ST_OFFSET		0x144
+
+static void ufs_mtk_spm_request_occupy(struct ufs_hba *hba)
+{
+	struct regmap *spm;
+	u32 sta;
+	int ret;
+
+	spm = syscon_regmap_lookup_by_compatible("mediatek,mt6833-scpsys");
+	if (IS_ERR(spm)) {
+		dev_info(hba->dev, "UFS_SPM: no scpsys regmap, skipping\n");
+		return;
+	}
+
+	ret = regmap_read(spm, UFS_SPM_SRC_REQ_STA0, &sta);
+	if (ret) {
+		dev_info(hba->dev, "UFS_SPM: read failed %d\n", ret);
+		return;
+	}
+	dev_info(hba->dev, "UFS_SPM: SRC_REQ_STA0=0x%08x ufs_req=0x%x\n",
+		 sta, (sta & UFS_SPM_UFS_REQ_MASK) >> 10);
+
+	writel(1, hba->mmio_base + UFS_XOUFS_ST_OFFSET);
+	ret = readl_poll_timeout(hba->mmio_base + UFS_XOUFS_ST_OFFSET,
+				 sta, (sta & 0x1), 50, 2400);
+	if (ret) {
+		dev_warn(hba->dev, "UFS_SPM: XOUFS request no ack\n");
+		return;
+	}
+
+	ret = regmap_read(spm, UFS_SPM_SRC_REQ_STA0, &sta);
+	if (ret)
+		return;
+	dev_info(hba->dev, "UFS_SPM: after request SRC_REQ_STA0=0x%08x\n", sta);
+	if ((sta & UFS_SPM_UFS_REQ_MASK) == 0)
+		dev_warn(hba->dev,
+			 "UFS_SPM: SPM shows NO ufs request - occupation failed\n");
+	else
+		dev_info(hba->dev, "UFS_SPM: occupation in place\n");
 }
 
 static void ufs_mtk_mcq_disable_irq(struct ufs_hba *hba)
@@ -1691,8 +1755,18 @@ static void ufs_mtk_post_link(struct ufs_hba *hba)
 		ufshcd_dme_set(hba, UIC_ARG_MIB(VS_DEBUGOMC), tmp);
 	}
 
-	/* enable unipro clock gating feature */
-	ufs_mtk_cfg_unipro_cg(hba, true);
+	/*
+	 * UFS_MTK_NO_UNIPRO_CLOCK_GATING
+	 *
+	 * The device's RX/SYS/TX symbol clocks gate on device-internal idle
+	 * (VS_SAVEPOWERCONTROL). On this board the device intermittently fails
+	 * to wake from that gated state: it NACs every UIC command, its DME
+	 * becomes unreachable (link startup -EIO through a full host reset),
+	 * and the host controller wedges with orphaned requests. Disable the
+	 * device-side gating so the symbol clocks stay on; the device power
+	 * cost is negligible and the wedge disappears with it.
+	 */
+	ufs_mtk_cfg_unipro_cg(hba, false);
 }
 
 static int ufs_mtk_link_startup_notify(struct ufs_hba *hba,
@@ -1955,6 +2029,7 @@ static int ufs_mtk_resume(struct ufs_hba *hba, enum ufs_pm_op pm_op)
 
 	if (hba->ufshcd_state != UFSHCD_STATE_OPERATIONAL)
 		ufs_mtk_dev_vreg_set_lpm(hba, false);
+
 
 	ufs_mtk_sram_pwr_ctrl(true, res);
 
@@ -2553,6 +2628,7 @@ skip_phy:
 	 * entering LPM.
 	 */
 	ufs_mtk_dev_vreg_set_lpm(hba, false);
+	ufs_mtk_spm_request_occupy(hba);
 
 out:
 	of_node_put(phy_node);
