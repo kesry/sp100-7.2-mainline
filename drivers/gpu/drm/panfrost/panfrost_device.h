@@ -152,6 +152,13 @@ struct panfrost_device {
 	DECLARE_BITMAP(is_suspended, PANFROST_COMP_BIT_MAX);
 
 	spinlock_t as_lock;
+
+	/*
+	 * Set once wait_ready() has seen AS_STATUS_AS_ACTIVE never clear up.
+	 * From then on every MMU operation fails immediately instead of
+	 * spinning again - see the comment on wait_ready().
+	 */
+	bool mmu_stuck;
 	unsigned long as_alloc_mask;
 	unsigned long as_faulty_mask;
 	struct list_head as_lru_list;

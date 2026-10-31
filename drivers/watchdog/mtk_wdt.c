@@ -253,30 +253,6 @@ static int mtk_wdt_restart(struct watchdog_device *wdt_dev,
 	return 0;
 }
 
-/*
- * MTK_WDT_HIGH_PRIO_RESTART
- *
- * machine_restart() -> do_kernel_restart() walks the restart notifier chain in
- * descending priority order. PSCI registers psci_sys_reset at priority 129,
- * and the watchdog core registers this driver's ->restart at
- * SYS_OFF_PRIO_DEFAULT (0) - so the firmware call always gets the first shot.
- *
- * On this board that firmware call intermittently never returns: the kernel
- * sits inside the SMC, "Reboot failed -- System halted" is never printed
- * because mtk_wdt_restart()'s loop is never reached, the watchdog has already
- * been poked by systemd-shutdown, and the machine only comes back when
- * somebody holds the power button.
- *
- * mtk_wdt_restart() itself cannot get stuck - it writes WDT_SWRST in a loop -
- * so run it *before* PSCI instead of after it. SYS_OFF_PRIO_HIGH (192) beats
- * psci_sys_reset's 129. Combined with EXRST_EN being set in mtk_wdt_start(),
- * TOP RGU can actually assert the external system reset.
- */
-static int mtk_wdt_high_prio_restart(struct sys_off_data *data)
-{
-	mtk_wdt_restart(NULL, 0, NULL);
-	return NOTIFY_DONE;   /* not reached */
-}
 
 static int mtk_wdt_ping(struct watchdog_device *wdt_dev)
 {
@@ -315,6 +291,70 @@ static int mtk_wdt_set_timeout(struct watchdog_device *wdt_dev,
 
 	return 0;
 }
+
+/*
+ * MTK_WDT_HIGH_PRIO_RESTART
+ *
+ * machine_restart() -> do_kernel_restart() walks the restart notifier chain in
+ * descending priority order. PSCI registers psci_sys_reset at priority 129,
+ * and the watchdog core registers this driver's ->restart at
+ * SYS_OFF_PRIO_DEFAULT (0) - so the firmware call always gets the first shot.
+ *
+ * On this board that firmware call intermittently never returns: the kernel
+ * sits inside the SMC, "Reboot failed -- System halted" is never printed
+ * because mtk_wdt_restart()'s loop is never reached, the watchdog has already
+ * been poked by systemd-shutdown, and the machine only comes back when
+ * somebody holds the power button.
+ *
+ * mtk_wdt_restart() itself cannot get stuck - it writes WDT_SWRST in a loop -
+ * so run it *before* PSCI instead of after it. SYS_OFF_PRIO_HIGH (192) beats
+ * psci_sys_reset's 129. Combined with EXRST_EN being set in mtk_wdt_start(),
+ * TOP RGU can actually assert the external system reset.
+ */
+static int mtk_wdt_high_prio_restart(struct sys_off_data *data)
+{
+	struct mtk_wdt_dev *mtk_wdt = dev_get_drvdata(data->dev);
+	void __iomem *wdt_base = mtk_wdt->wdt_base;
+	u32 reg;
+
+	/*
+	 * MTK_WDT_ARM_BEFORE_PSCI
+	 *
+	 * Do not reset the SoC here. Just make sure the watchdog is armed with
+	 * a short timeout, then let the chain continue to psci_sys_reset().
+	 *
+	 * The problem being solved: the PSCI reset SMC intermittently never
+	 * returns. Anything that runs *after* it never runs at all, and
+	 * systemd-shutdown has already poked the watchdog, so nothing is left
+	 * that can reset the machine - it needs a hand on the power button.
+	 *
+	 * Arming the counter before the call fixes that without changing the
+	 * fast path: if PSCI resets the SoC the watchdog never expires; if the
+	 * SMC hangs, the TOP RGU counter runs out on its own and resets the
+	 * SoC from hardware. Nothing in that path goes through firmware or a
+	 * software register write, so it cannot get stuck the same way.
+	 *
+	 * WDT_MODE_EN | WDT_MODE_EXRST_EN is the combination measured to
+	 * actually assert the external reset on this board (stock bootloader
+	 * leaves 0x7d).
+	 */
+	mtk_wdt_set_timeout(&mtk_wdt->wdt_dev, 10);
+
+	reg = ioread32(wdt_base + WDT_MODE);
+	reg &= ~(WDT_MODE_IRQ_EN | WDT_MODE_DUAL_EN);
+	reg |= WDT_MODE_EN | WDT_MODE_EXRST_EN;
+	writel(reg | WDT_MODE_KEY, wdt_base + WDT_MODE);
+
+	mtk_wdt_ping(&mtk_wdt->wdt_dev);
+
+	/*
+	 * Return NOTIFY_DONE so the rest of the chain - in particular
+	 * psci_sys_reset() - still runs. The watchdog is now a real deadline
+	 * behind it.
+	 */
+	return NOTIFY_DONE;
+}
+
 
 static void mtk_wdt_init(struct watchdog_device *wdt_dev)
 {
@@ -542,10 +582,10 @@ static int mtk_wdt_probe(struct platform_device *pdev)
 		return err;
 
 	/*
-	 * MTK_WDT_HIGH_PRIO_RESTART - see the comment on
-	 * mtk_wdt_high_prio_restart(). Registered in addition to the generic
-	 * watchdog ->restart so that TOP RGU runs before the PSCI firmware
-	 * call rather than after it.
+	 * MTK_WDT_ARM_BEFORE_PSCI - see the comment on
+	 * mtk_wdt_high_prio_restart(). Registered at priority 192 so it runs
+	 * before psci_sys_reset (129); it arms the watchdog and returns, the
+	 * reset itself is still done by PSCI when that works.
 	 */
 	/*
 	 * MTK_WDT_RESTART_AFTER_PSCI
@@ -565,7 +605,7 @@ static int mtk_wdt_probe(struct platform_device *pdev)
 	 * intermittently never returns on this board.
 	 */
 	err = devm_register_sys_off_handler(dev, SYS_OFF_MODE_RESTART,
-					    100,
+					    SYS_OFF_PRIO_HIGH,
 					    mtk_wdt_high_prio_restart, NULL);
 	if (err) {
 		dev_warn(dev, "failed to register high priority restart handler: %d\n",

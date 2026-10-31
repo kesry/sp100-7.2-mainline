@@ -74,15 +74,43 @@ static int wait_ready(struct panfrost_device *pfdev, u32 as_nr)
 	int ret;
 	u32 val;
 
-	/* Wait for the MMU status to indicate there is no active command, in
-	 * case one is pending. */
+	/*
+	 * PANFROST_MMU_STUCK_SHORT_POLL
+	 *
+	 * This runs from mmu_hw_do_operation() with pfdev->as_lock held, i.e.
+	 * with preemption disabled, so it must not busy-wait for long.
+	 *
+	 * The poll used to allow 100 ms and mmu_hw_do_operation_locked() can
+	 * reach wait_ready() three times (once from lock_region(), once for the
+	 * operation itself and once for the flush wait), so a wedged GPU cost
+	 * up to 300 ms of spinning per MMU operation - all of it with as_lock
+	 * held, which also starves panfrost_mmu_irq_handler_thread() and every
+	 * other user of an address space.
+	 *
+	 * On this board that produced a machine that looked alive and then
+	 * stopped dead with nothing in the log: a 240 s heartbeat was written to
+	 * disk every second right up to the moment it froze, and there was no
+	 * panic, no soft lockup and no hung task afterwards - the lockup
+	 * detector needs timer interrupts, so a CPU spinning with interrupts
+	 * off cannot report anything.
+	 *
+	 * A healthy MMU clears AS_ACTIVE within microseconds, so cap the spin at
+	 * 1 ms. Once it has failed, remember that and fail every later call
+	 * immediately instead of spinning again; panfrost_mmu_reset() clears the
+	 * flag when the device is actually reset.
+	 */
+	if (pfdev->mmu_stuck)
+		return -EIO;
+
 	ret = readl_relaxed_poll_timeout_atomic(pfdev->iomem + AS_STATUS(as_nr),
-		val, !(val & AS_STATUS_AS_ACTIVE), 10, 100000);
+		val, !(val & AS_STATUS_AS_ACTIVE), 10, 1000);
 
 	if (ret) {
+		pfdev->mmu_stuck = true;
 		/* The GPU hung, let's trigger a reset */
 		panfrost_device_schedule_reset(pfdev);
-		dev_err(pfdev->base.dev, "AS_ACTIVE bit stuck\n");
+		dev_err(pfdev->base.dev,
+			"AS_ACTIVE bit stuck, MMU marked dead (further MMU ops will fail fast)\n");
 	}
 
 	return ret;
@@ -341,6 +369,9 @@ void panfrost_mmu_reset(struct panfrost_device *pfdev)
 	struct panfrost_mmu *mmu, *mmu_tmp;
 
 	clear_bit(PANFROST_COMP_BIT_MMU, pfdev->is_suspended);
+
+	/* The device has been reset, so the MMU gets another chance. */
+	pfdev->mmu_stuck = false;
 	/*
 	 * Runtime suspend masks the MMU interrupt (panfrost_mmu_suspend_irq)
 	 * and nothing ever unmasks it again: panfrost_mmu_init() only requests

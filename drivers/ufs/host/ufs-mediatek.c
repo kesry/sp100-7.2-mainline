@@ -857,8 +857,27 @@ static int ufs_mtk_setup_clocks(struct ufs_hba *hba, bool on,
 		 * error recovery - keeps the original conservative behaviour
 		 * because hba->shutting_down is only set by ufshcd_wl_shutdown().
 		 */
-		if (READ_ONCE(hba->shutting_down))
-			clk_pwr_off = true;
+		/*
+		 * UFS_MTK_KEEP_PHY_ON_FOR_PSCI
+		 *
+		 * Do NOT force the clocks and MPHY down just because this is a
+		 * shutdown. That override was added while auto-hibern8 was
+		 * enabled with a 10 ms timer, to make sure the PHY got powered
+		 * off when ufshcd_is_auto_hibern8_enabled() could not drive the
+		 * normal path. With auto-hibern8 disabled again (ahit == 0) it
+		 * does more harm than good:
+		 *
+		 * the original bisect on this board showed that powering the MPHY
+		 * down is exactly what makes the firmware PSCI reset never
+		 * complete. With the ref clock gated and the PHY off, about a
+		 * quarter of reboots fell back to a cold reset through the TOP RGU
+		 * watchdog - 134-137 s per round and a destroyed ramoops, instead
+		 * of the usual 37-42 s warm reset.
+		 *
+		 * Leaving the PHY powered hands the device to the bootloader in
+		 * the state it expects; the bootloader re-initialises the PHY and
+		 * the link from scratch anyway.
+		 */
 
 		if (clk_pwr_off) {
 			ufs_mtk_pwr_ctrl(hba, false);

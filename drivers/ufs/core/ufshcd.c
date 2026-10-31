@@ -10935,7 +10935,29 @@ static void ufshcd_wl_shutdown(struct scsi_device *sdev)
 	 * remounted the root read-only, ran sync and flushed the SCSI caches.
 	 * scsi_device_quiesce() above stops any new I/O from being queued.
 	 */
-	hba->is_powered = false;
+
+	/*
+	 * UFS_SHUTDOWN_QUIESCE_IRQ
+	 *
+	 * Stop servicing controller interrupts before returning.
+	 *
+	 * Without this the controller stays live with its IRQ enabled while the
+	 * rest of device_shutdown() runs. A residual interrupt then enters
+	 * ufshcd_intr(), the error handler decides the link needs attention and
+	 * issues a UIC command - and that command never completes, because
+	 * nothing is servicing the controller any more. The console showed
+	 * exactly that sequence during a shutdown that then froze:
+	 *
+	 *   ufshcd-mtk 11270000.ufshci: no active UIC command ...
+	 *   ufshcd-mtk 11270000.ufshci: ... unhandled interrupt 0x00000000
+	 *
+	 * Deliberately NOT clearing hba->is_powered any more. Upstream only
+	 * clears that flag after ufshcd_suspend() has actually quiesced the
+	 * controller; clearing it here, with the controller still running, makes
+	 * ufshcd_is_hba_active() report "not active" while the hardware is very
+	 * much on, so the UIC and doorbell paths disagree with the hardware.
+	 */
+	ufshcd_disable_irq(hba);
 	return;
 }
 
