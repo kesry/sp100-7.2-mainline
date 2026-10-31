@@ -1361,6 +1361,25 @@ static int ufs_mtk_init(struct ufs_hba *hba)
 
 	hba->quirks |= UFSHCI_QUIRK_SKIP_MANUAL_WB_FLUSH_CTRL;
 
+	/*
+	 * UFS_MTK_BROKEN_HCE
+	 *
+	 * This legacy controller (IP 0x20160706) cannot recover the device
+	 * with a plain HCE write: ufshcd_hba_enable() must take the link
+	 * offline, reset the device-side UniPro with DME_RESET and re-enable
+	 * it with DME_ENABLE before the link startup. Without that sequence
+	 * a device whose DME has hung stays hung forever - link startup
+	 * fails with -EIO, every recovery attempt fails with it, and the
+	 * only way out is a full power cycle. The vendor stack performs the
+	 * DME_RESET dance on every controller enable; exynos, the other
+	 * user of this flow, sets the same quirk.
+	 *
+	 * With the quirk in place every boot also performs the full
+	 * device-side reset at probe time, which is the sequence the
+	 * bootloader-armed device expects after a warm reset.
+	 */
+	hba->quirks |= UFSHCI_QUIRK_BROKEN_HCE;
+
 	hba->quirks |= UFSHCD_QUIRK_MCQ_BROKEN_INTR;
 	if (host->caps & UFS_MTK_CAP_MCQ_BROKEN_RTC)
 		hba->quirks |= UFSHCD_QUIRK_MCQ_BROKEN_RTC;
