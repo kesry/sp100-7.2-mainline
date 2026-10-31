@@ -30,10 +30,18 @@ static int __init irq_affinity_setup(char *str)
 	alloc_bootmem_cpumask_var(&irq_default_affinity);
 	cpulist_parse(str, irq_default_affinity);
 	/*
-	 * Set at least the boot cpu. We don't want to end up with
-	 * bugreports caused by random commandline masks
+	 * MTK_IRQAFFINITY_HONOR_MASK
+	 *
+	 * Upstream adds the boot CPU unconditionally "to avoid bugreports
+	 * caused by random commandline masks". On GICv3 every SPI has one
+	 * IROUTER target, picked as the first CPU of the requested mask, so
+	 * irqaffinity=1-7 silently becomes 0xff and CPU0 keeps every device
+	 * interrupt on top of the timer softirq and the interrupt entropy
+	 * collection. Only fill the mask in when parsing left it empty; a
+	 * valid explicit mask is taken literally.
 	 */
-	cpumask_set_cpu(smp_processor_id(), irq_default_affinity);
+	if (cpumask_empty(irq_default_affinity))
+		cpumask_set_cpu(smp_processor_id(), irq_default_affinity);
 	return 1;
 }
 __setup("irqaffinity=", irq_affinity_setup);
