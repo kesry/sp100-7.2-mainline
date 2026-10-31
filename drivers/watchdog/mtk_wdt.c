@@ -347,6 +347,10 @@ static int mtk_wdt_high_prio_restart(struct sys_off_data *data)
 
 	mtk_wdt_ping(&mtk_wdt->wdt_dev);
 
+	/* MTK_WDT_RESTART_TRACE - seen on the console, survives a cold reset. */
+	pr_emerg("MTK_WDT_RESTART_TRACE: armed, MODE=0x%08x LENGTH=0x%08x\n",
+		 ioread32(wdt_base + WDT_MODE), ioread32(wdt_base + WDT_LENGTH));
+
 	/*
 	 * Return NOTIFY_DONE so the rest of the chain - in particular
 	 * psci_sys_reset() - still runs. The watchdog is now a real deadline

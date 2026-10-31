@@ -309,6 +309,17 @@ static int get_set_conduit_method(const struct device_node *np)
 static int psci_sys_reset(struct notifier_block *nb, unsigned long action,
 			  void *data)
 {
+	/*
+	 * PSCI_RESET_TRACE
+	 *
+	 * Emergency level on purpose: loglevel is 4, and these two lines are the
+	 * only way to tell whether the reset SMC hung or whether the reboot
+	 * stalled before getting here. A cold reset destroys ramoops, so pstore
+	 * cannot answer that question - the console can.
+	 *
+	 *   "calling"  printed, "returned" missing  -> the SMC hung
+	 *   "calling"  missing                      -> the stall is earlier
+	 */
 	if ((reboot_mode == REBOOT_WARM || reboot_mode == REBOOT_SOFT) &&
 	    psci_system_reset2_supported) {
 		/*
@@ -316,9 +327,14 @@ static int psci_sys_reset(struct notifier_block *nb, unsigned long action,
 		 * reset_type[30:0] = 0 (SYSTEM_WARM_RESET)
 		 * cookie = 0 (ignored by the implementation)
 		 */
+		pr_emerg("PSCI_RESET_TRACE: calling SYSTEM_RESET2\n");
 		invoke_psci_fn(PSCI_FN_NATIVE(1_1, SYSTEM_RESET2), 0, 0, 0);
+		pr_emerg("PSCI_RESET_TRACE: SYSTEM_RESET2 returned, firmware did not reset\n");
 	} else {
+		pr_emerg("PSCI_RESET_TRACE: calling SYSTEM_RESET (cold), reset2_supported=%d\n",
+			 psci_system_reset2_supported);
 		invoke_psci_fn(PSCI_0_2_FN_SYSTEM_RESET, 0, 0, 0);
+		pr_emerg("PSCI_RESET_TRACE: SYSTEM_RESET returned, firmware did not reset\n");
 	}
 
 	return NOTIFY_DONE;

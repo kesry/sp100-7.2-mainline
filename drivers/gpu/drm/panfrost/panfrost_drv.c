@@ -1018,6 +1018,41 @@ err_out0:
 	return err;
 }
 
+/*
+ * PANFROST_POWER_OFF_GPU_ON_SHUTDOWN
+ *
+ * There was no .shutdown callback at all, so during a reboot the GPU was left
+ * running and powered: panfrost_device_fini(), the only caller of
+ * panfrost_gpu_power_off(), runs from ->remove() and never on the shutdown
+ * path.
+ *
+ * The firmware's PSCI SYSTEM_RESET then has to reset a SoC whose GPU block is
+ * still active. On this board that reset intermittently never returns - about
+ * two reboots in fifteen fell back to a cold reset through the TOP RGU
+ * watchdog (~133 s instead of 41 s). The same firmware is happy to reset the
+ * SoC when the GPU has been put to sleep first, which is why runtime suspend
+ * does exactly these steps.
+ *
+ * Do the quiesce that runtime suspend does, minus the clock gating, and stop
+ * there: the bootloader reinitialises the GPU from scratch anyway.
+ */
+static void panfrost_shutdown(struct platform_device *pdev)
+{
+	struct panfrost_device *pfdev = platform_get_drvdata(pdev);
+
+	if (!pfdev)
+		return;
+
+	/* Stop taking job/MMU/GPU interrupts before touching the block. */
+	panfrost_jm_suspend_irq(pfdev);
+	panfrost_mmu_suspend_irq(pfdev);
+	panfrost_gpu_suspend_irq(pfdev);
+
+	/* Power the shader/tiler/L2 blocks down and mark the component asleep. */
+	panfrost_gpu_power_off(pfdev);
+	set_bit(PANFROST_COMP_BIT_GPU, pfdev->is_suspended);
+}
+
 static void panfrost_remove(struct platform_device *pdev)
 {
 	struct panfrost_device *pfdev = platform_get_drvdata(pdev);
@@ -1217,6 +1252,7 @@ MODULE_DEVICE_TABLE(of, dt_match);
 static struct platform_driver panfrost_driver = {
 	.probe		= panfrost_probe,
 	.remove		= panfrost_remove,
+	.shutdown	= panfrost_shutdown,
 	.driver		= {
 		.name	= "panfrost",
 		.pm	= pm_ptr(&panfrost_pm_ops),
