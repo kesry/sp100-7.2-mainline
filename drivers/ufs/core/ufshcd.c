@@ -5285,7 +5285,31 @@ link_startup:
 		 * DME link lost indication is only received when link is up,
 		 * but we can't be sure if the link is up until link startup
 		 * succeeds. So reset the local Uni-Pro and try again.
+		 *
+		 * UFS_MTK_DME_RESET_ON_STARTUP_RETRY
+		 *
+		 * When the device-side UniPro/DME layer is wedged, a plain
+		 * host-controller enable cannot reach it: the retrying link
+		 * startup fails with -EIO over and over and the wedge becomes
+		 * permanent. The device-side UniPro is still receiving frames
+		 * at that point, so a DME_RESET followed by DME_ENABLE does
+		 * reach it and resets exactly the stuck layer. The vendor stack
+		 * performs this dance on every controller enable; here it is
+		 * confined to the startup retry path so the normal boot flow is
+		 * untouched. Best effort: if the device is beyond that, the
+		 * failures are logged and the loop runs out.
 		 */
+		if (ret && retries) {
+			ufshcd_set_link_off(hba);
+			if (ufshcd_dme_reset(hba))
+				dev_err(hba->dev,
+					"%s: DME_RESET failed, retrying startup anyway\n",
+					__func__);
+			if (ufshcd_dme_enable(hba))
+				dev_err(hba->dev,
+					"%s: DME_ENABLE failed, retrying startup anyway\n",
+					__func__);
+		}
 		if (ret && retries && ufshcd_hba_enable(hba)) {
 			ufshcd_update_evt_hist(hba,
 					       UFS_EVT_LINK_STARTUP_FAIL,
