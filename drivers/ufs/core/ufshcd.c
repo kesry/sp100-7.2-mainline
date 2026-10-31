@@ -10857,6 +10857,25 @@ static void ufshcd_wl_shutdown(struct scsi_device *sdev)
 	 */
 	WRITE_ONCE(hba->shutting_down, true);
 
+	/*
+	 * UFS_SHUTDOWN_BLOCK_RPM
+	 *
+	 * Stop runtime PM from autosuspending the controller while the rest of
+	 * device_shutdown() runs. ufshcd_runtime_suspend() -> ufshcd_suspend()
+	 * issues a UIC power-mode-change command, and a UIC command needs its
+	 * completion interrupt to be delivered. Anything that happens to the IRQ
+	 * state during shutdown therefore turns that command into a timeout, and
+	 * a timed-out UIC command leaves its completion interrupt asserted:
+	 *
+	 *   ufshcd-mtk 11270000.ufshci: No active UIC command. Maybe a timeout occurred?
+	 *   ufshcd-mtk 11270000.ufshci: ufshcd_intr: Unhandled interrupt 0x...
+	 *
+	 * which then repeats for the whole shutdown (each round also dumps the
+	 * host registers). Hold a runtime PM reference so no suspend can be
+	 * started; it is never dropped, because the machine is going away.
+	 */
+	pm_runtime_get_noresume(hba->dev);
+
 	down(&hba->host_sem);
 	up(&hba->host_sem);
 
@@ -10936,28 +10955,17 @@ static void ufshcd_wl_shutdown(struct scsi_device *sdev)
 	 * scsi_device_quiesce() above stops any new I/O from being queued.
 	 */
 
+
 	/*
-	 * UFS_SHUTDOWN_QUIESCE_IRQ
+	 * Deliberately NOT calling ufshcd_disable_irq() here.
 	 *
-	 * Stop servicing controller interrupts before returning.
-	 *
-	 * Without this the controller stays live with its IRQ enabled while the
-	 * rest of device_shutdown() runs. A residual interrupt then enters
-	 * ufshcd_intr(), the error handler decides the link needs attention and
-	 * issues a UIC command - and that command never completes, because
-	 * nothing is servicing the controller any more. The console showed
-	 * exactly that sequence during a shutdown that then froze:
-	 *
-	 *   ufshcd-mtk 11270000.ufshci: no active UIC command ...
-	 *   ufshcd-mtk 11270000.ufshci: ... unhandled interrupt 0x00000000
-	 *
-	 * Deliberately NOT clearing hba->is_powered any more. Upstream only
-	 * clears that flag after ufshcd_suspend() has actually quiesced the
-	 * controller; clearing it here, with the controller still running, makes
-	 * ufshcd_is_hba_active() report "not active" while the hardware is very
-	 * much on, so the UIC and doorbell paths disagree with the hardware.
+	 * Masking the controller IRQ looks tidy, but every UIC command needs its
+	 * completion interrupt to be delivered. Disabling it guarantees that any
+	 * command already in flight can only finish by timing out, which is the
+	 * flooding described above. Leave the IRQ as it is: hba->shutting_down is
+	 * set, so ufshcd_err_handling_should_stop() makes the error handler bail
+	 * out, and the bootloader reinitialises the controller anyway.
 	 */
-	ufshcd_disable_irq(hba);
 	return;
 }
 
