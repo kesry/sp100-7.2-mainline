@@ -313,49 +313,55 @@ static int mtk_wdt_set_timeout(struct watchdog_device *wdt_dev,
  */
 static int mtk_wdt_high_prio_restart(struct sys_off_data *data)
 {
+	/*
+	 * MTK_WDT_ARM_THEN_PSPI
+	 *
+	 * Arm the watchdog with a short deadline, then return NOTIFY_DONE so
+	 * psci_sys_reset() still gets its turn. Do not reset from here.
+	 *
+	 * Resetting here makes every reboot a cold boot, because TOP RGU
+	 * reinitialises DRAM. That costs more than the extra seconds: a cold
+	 * boot wipes the ramoops region, and after enough of them its ECC
+	 * header goes uncorrectable for good -
+	 *
+	 *   ramoops: uncorrectable error in header      (x6, every boot)
+	 *   /sys/fs/pstore entries: 0
+	 *
+	 * - which removes the only way to see what a failed reboot did. A warm
+	 * reset leaves DRAM alone, so ramoops survives and can repair itself.
+	 *
+	 * PSCI produces a warm reset roughly three times in four on this board.
+	 * When its SMC hangs, the counter armed below expires and the machine
+	 * still comes back, at the price of one cold boot.
+	 *
+	 * WDT_MODE_EN and WDT_MODE_EXRST_EN must both be set for the counter to
+	 * assert anything: early boot clears WDT_MODE outright
+	 * (CONFIG_MT6833_DISABLE_WDT logs "mode was 0x7d"), and WDT_MODE_DUAL_EN
+	 * or WDT_MODE_IRQ_EN left over from the bootloader would make a timeout
+	 * only raise the bark interrupt and restart the count, doubling the real
+	 * reset delay. Clear both, set both.
+	 */
 	struct mtk_wdt_dev *mtk_wdt = dev_get_drvdata(data->dev);
-	void __iomem *wdt_base = mtk_wdt->wdt_base;
+	void __iomem *wdt_base;
 	u32 reg;
 
-	/*
-	 * MTK_WDT_ARM_BEFORE_PSCI
-	 *
-	 * Do not reset the SoC here. Just make sure the watchdog is armed with
-	 * a short timeout, then let the chain continue to psci_sys_reset().
-	 *
-	 * The problem being solved: the PSCI reset SMC intermittently never
-	 * returns. Anything that runs *after* it never runs at all, and
-	 * systemd-shutdown has already poked the watchdog, so nothing is left
-	 * that can reset the machine - it needs a hand on the power button.
-	 *
-	 * Arming the counter before the call fixes that without changing the
-	 * fast path: if PSCI resets the SoC the watchdog never expires; if the
-	 * SMC hangs, the TOP RGU counter runs out on its own and resets the
-	 * SoC from hardware. Nothing in that path goes through firmware or a
-	 * software register write, so it cannot get stuck the same way.
-	 *
-	 * WDT_MODE_EN | WDT_MODE_EXRST_EN is the combination measured to
-	 * actually assert the external reset on this board (stock bootloader
-	 * leaves 0x7d).
-	 */
+	if (!mtk_wdt)
+		return NOTIFY_DONE;
+
+	wdt_base = mtk_wdt->wdt_base;
+
 	mtk_wdt_set_timeout(&mtk_wdt->wdt_dev, 10);
 
 	reg = ioread32(wdt_base + WDT_MODE);
 	reg &= ~(WDT_MODE_IRQ_EN | WDT_MODE_DUAL_EN);
-	reg |= WDT_MODE_EN | WDT_MODE_EXRST_EN;
+	reg |= (WDT_MODE_EN | WDT_MODE_EXRST_EN);
 	writel(reg | WDT_MODE_KEY, wdt_base + WDT_MODE);
 
 	mtk_wdt_ping(&mtk_wdt->wdt_dev);
 
-	/* MTK_WDT_RESTART_TRACE - seen on the console, survives a cold reset. */
-	pr_emerg("MTK_WDT_RESTART_TRACE: armed, MODE=0x%08x LENGTH=0x%08x\n",
+	pr_emerg("MTK_WDT_ARMED: MODE=0x%08x LENGTH=0x%08x\n",
 		 ioread32(wdt_base + WDT_MODE), ioread32(wdt_base + WDT_LENGTH));
 
-	/*
-	 * Return NOTIFY_DONE so the rest of the chain - in particular
-	 * psci_sys_reset() - still runs. The watchdog is now a real deadline
-	 * behind it.
-	 */
 	return NOTIFY_DONE;
 }
 
