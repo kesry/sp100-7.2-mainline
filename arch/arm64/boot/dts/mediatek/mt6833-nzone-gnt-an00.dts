@@ -55,7 +55,7 @@
 		 * was added for. Plain tty0 plus warning-level messages is enough,
 		 * and /proc/sys/kernel/printk can still raise the level at runtime.
 		 */
-		bootargs = "reboot=warm loglevel=4 panic=0 console=tty0 fbcon=nodefer clk_ignore_unused pd_ignore_unused fw_devlink=off root=PARTLABEL=userdata rootfstype=ext4 rw rootwait";
+		bootargs = "reboot=warm loglevel=4 panic=10 console=tty0 fbcon=nodefer clk_ignore_unused pd_ignore_unused fw_devlink=off root=PARTLABEL=userdata rootfstype=ext4 rw rootwait softlockup_panic=1";
 		kaslr-seed = <0 0>;
 
 		fb0: framebuffer@7ed80000 {
@@ -1051,13 +1051,39 @@
 		 *    fast and the slow cycles, so the extra ~95 s is spent before
 		 *    the kernel starts, i.e. in the reset or in LK.
 		 *
-		 * The stock device tree for this board sets
-		 * mediatek,auto-hibern8-timer = <0x0a>, i.e. auto-hibern8 enabled
-		 * with a 10 ms idle timer. Restore that behaviour: 10 ms is long
-		 * enough not to thrash, and it lets the link reach Hibernate8
-		 * before the PHY is powered down.
+		 * AH8_DISABLED_FIXES_UIC_TIMEOUT
+		 *
+		 * Auto-hibern8 stays DISABLED (ahit == 0).
+		 *
+		 * It was briefly enabled here with a 10 ms idle timer, to match
+		 * the stock device tree. That reintroduced a documented failure:
+		 * ufs_mtk_fix_ahit() in drivers/ufs/host/ufs-mediatek.c warns
+		 * that a short auto-hibern8 timer makes the UniPro link drop into
+		 * Hibernate constantly, and that the UIC wake-up then times out
+		 * during shutdown:
+		 *
+		 *   ufshcd-mtk 11270000.ufshci: uic error code data link layer
+		 *   ufshcd-mtk 11270000.ufshci: no active uic command maybe a
+		 *                               timeout
+		 *
+		 * "The root filesystem becomes unreadable, systemd-shutdown can
+		 * no longer be executed and the machine hangs instead of
+		 * rebooting - every reboot had to be finished by power-cycling
+		 * the phone by hand."
+		 *
+		 * Measured here with 10 ms: the console floods with exactly those
+		 * two lines, shutdown stalls while stopping user@1000.service, and
+		 * some reboots only finish because the TOP RGU watchdog expires
+		 * (134 s and 138 s rounds in a 15-round soak). With ahit == 0 the
+		 * same soak never produced a UIC timeout.
+		 *
+		 * The reason this was originally turned on - that with auto-hibern8
+		 * off ufs_mtk_setup_clocks() never reached ufs_mtk_pwr_ctrl(false)
+		 * and the MPHY stayed powered across the reset - is handled
+		 * separately now by UFS_MTK_SHUTDOWN_PWR_CTRL_OFF, which forces
+		 * clk_pwr_off = true when hba->shutting_down is set.
 		 */
-		mediatek,auto-hibern8-us = <10000>;
+		mediatek,auto-hibern8-us = <0>;
 		status = "okay";
 	};
 	ufsphy: ufs-phy@11fa0000 {
