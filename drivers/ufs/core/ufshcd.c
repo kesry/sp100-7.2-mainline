@@ -2611,9 +2611,19 @@ ufshcd_wait_for_uic_cmd(struct ufs_hba *hba, struct uic_command *uic_cmd)
 		ret = uic_cmd->argument2 & MASK_UIC_COMMAND_RESULT;
 	} else {
 		ret = -ETIMEDOUT;
+		/*
+		 * UFS_UIC_TIMEOUT_TRACE
+		 *
+		 * The "No active UIC command" flood after this line hides the
+		 * real event, which is THIS timeout. Dump everything needed to
+		 * identify the command and the path that issued it.
+		 */
 		dev_err(hba->dev,
-			"uic cmd 0x%x with arg3 0x%x completion timeout\n",
-			uic_cmd->command, uic_cmd->argument3);
+			"UFS_UIC_TIMEOUT op=0x%02x a1=0x%08x a2=0x%08x a3=0x%08x devpm=%d link=%d sd=%d from %pS\n",
+			uic_cmd->command, uic_cmd->argument1, uic_cmd->argument2,
+			uic_cmd->argument3, hba->curr_dev_pwr_mode,
+			hba->uic_link_state, READ_ONCE(hba->shutting_down),
+			__builtin_return_address(0));
 
 		if (!uic_cmd->cmd_active) {
 			dev_err(hba->dev, "%s: UIC cmd has been completed, return the result\n",

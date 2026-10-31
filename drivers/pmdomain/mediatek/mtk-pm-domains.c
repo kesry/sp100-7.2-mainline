@@ -482,18 +482,6 @@ static int scpsys_ctl_pwrseq_on(struct scpsys_domain *pd)
 	bool do_rtff_nrestore, tmp;
 	int ret;
 
-#ifdef MT6833_REVIVE_PROBE
-	{
-		u32 s0 = 0, s0b = 0;
-
-		regmap_read(scpsys->base, pd->data->pwr_sta_offs, &s0);
-		regmap_read(scpsys->base, pd->data->pwr_sta2nd_offs, &s0b);
-		dev_info(scpsys->dev,
-			 "%s: ON BEGIN ctl=0x%03x sta=0x%08x sta2=0x%08x mask=0x%08x\n",
-			 pd->genpd.name, pd->data->ctl_offs, s0, s0b, pd->data->sta_mask);
-	}
-#endif
-
 	/* subsys power on */
 	regmap_set_bits(scpsys->base, pd->data->ctl_offs, PWR_ON_BIT);
 	regmap_set_bits(scpsys->base, pd->data->ctl_offs, PWR_ON_2ND_BIT);
@@ -501,19 +489,6 @@ static int scpsys_ctl_pwrseq_on(struct scpsys_domain *pd)
 	/* wait until PWR_ACK = 1 */
 	ret = readx_poll_timeout(scpsys_domain_is_on, pd, tmp, tmp, MTK_POLL_DELAY_US,
 				 MTK_POLL_TIMEOUT);
-#ifdef MT6833_REVIVE_PROBE
-	{
-		u32 s1 = 0, s1b = 0, c1 = 0;
-
-		regmap_read(scpsys->base, pd->data->pwr_sta_offs, &s1);
-		regmap_read(scpsys->base, pd->data->pwr_sta2nd_offs, &s1b);
-		regmap_read(scpsys->base, pd->data->ctl_offs, &c1);
-		dev_info(scpsys->dev,
-			 "%s: ON %s ctl=0x%03x(val 0x%08x) sta=0x%08x sta2=0x%08x mask=0x%08x\n",
-			 pd->genpd.name, ret ? "TIMEOUT" : "DONE",
-			 pd->data->ctl_offs, c1, s1, s1b, pd->data->sta_mask);
-	}
-#endif
 	if (ret < 0)
 		return ret;
 
@@ -1406,23 +1381,6 @@ static int scpsys_probe(struct platform_device *pdev)
 		dev_err(dev, "failed to add provider: %d\n", ret);
 		goto err_cleanup_domains;
 	}
-
-#ifdef MT6833_REVIVE_PROBE
-	{
-		int i;
-
-		for (i = 0; i < soc->num_domains; i++) {
-			const struct scpsys_domain_data *d = &soc->domains_data[i];
-
-			if (!d->name)
-				continue;
-			dev_info(dev,
-				 "domain[%d] %-5s sta=0x%08x sta2=0x%08x ctl=0x%03x caps=0x%02x\n",
-				 i, d->name, d->sta_mask, d->sta2nd_mask,
-				 d->ctl_offs, d->caps);
-		}
-	}
-#endif
 
 	return 0;
 
