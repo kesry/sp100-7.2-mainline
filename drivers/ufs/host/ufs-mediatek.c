@@ -2528,6 +2528,20 @@ skip_phy:
 	if (!hba)
 		goto out;
 
+	/*
+	 * UFS_MTK_NO_AUTO_HIBERN8_LINK
+	 *
+	 * The default rpm_lvl (3) puts the link into hibern8 on every idle
+	 * window, and each of those transitions is a DME hibernate UIC
+	 * command. On this board such commands intermittently NAC-time out
+	 * while the device is busy; the link then wedges, the console fills
+	 * with "No active UIC command" for the rest of the shutdown, and
+	 * recovery needs a full power cycle. Idle clock gating (lvl 0) keeps
+	 * the host-side power saving without ever touching the link state,
+	 * so there is no UIC traffic left that can wedge it.
+	 */
+	hba->rpm_lvl = UFS_PM_LVL_0;
+
 	if (phy_node && phy_dev) {
 		host = ufshcd_get_variant(hba);
 		host->phy_dev = phy_dev;
