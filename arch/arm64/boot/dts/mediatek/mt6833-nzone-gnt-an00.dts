@@ -55,7 +55,7 @@
 		 * was added for. Plain tty0 plus warning-level messages is enough,
 		 * and /proc/sys/kernel/printk can still raise the level at runtime.
 		 */
-		bootargs = "reboot=warm loglevel=4 panic=0 console=tty0 fbcon=nodefer clk_ignore_unused pd_ignore_unused fw_devlink=off root=PARTLABEL=userdata rootfstype=ext4 rw rootwait";
+		bootargs = "irqaffinity=1-7 reboot=warm loglevel=4 panic=0 console=tty0 fbcon=nodefer clk_ignore_unused pd_ignore_unused fw_devlink=off root=PARTLABEL=userdata rootfstype=ext4 rw rootwait";
 		kaslr-seed = <0 0>;
 
 		fb0: framebuffer@7ed80000 {
@@ -254,6 +254,26 @@
 					 <PINMUX_GPIO30__FUNC_SPI1_MI>;
 			};
 
+		};
+
+		/*
+		 * MISO (GPIO30) needs a pull-up.
+		 *
+		 * The controller tri-states MISO between transfers and this board
+		 * has no external pull on that line, so an unpulled input reads as
+		 * floating noise: every read came back 0x00 or 0xff instead of the
+		 * Chipone ID at register 0x0A00.
+		 *
+		 * Deliberately a separate pinctrl state, not a subnode of spi1_pins.
+		 * As a subnode it was silently ignored - pinconf still reported
+		 * "input bias disabled" for GPIO30. Same trap as drive-strength in
+		 * this group, which aborts the whole group before pinmux is written.
+		 */
+		spi1_mi_bias: spi1-mi-bias {
+			pins-mi {
+				pins = "GPIO30";
+				bias-pull-up;
+			};
 		};
 
 		/*
@@ -708,7 +728,7 @@
 		clock-names = "parent-clk", "sel-clk", "spi-clk";
 		mediatek,pad-select = <0>;
 		pinctrl-names = "default";
-		pinctrl-0 = <&spi1_pins>;
+		pinctrl-0 = <&spi1_pins>, <&spi1_mi_bias>;
 		/*
 		 * Touch controller reset (stock ts_kit: RST on GPIO15).
 		 *
