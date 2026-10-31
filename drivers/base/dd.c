@@ -289,8 +289,6 @@ int driver_deferred_probe_check_state(struct device *dev)
 		return -ENODEV;
 	}
 
-	pr_err("GNTCORE: check_state called for %s, timeout=%d initcalls_done=%d, returning EPROBE_DEFER path\n",
-	       dev_name(dev), driver_deferred_probe_timeout, initcalls_done);
 	if (!driver_deferred_probe_timeout && initcalls_done) {
 		dev_warn(dev, "deferred probe timeout, ignoring dependency\n");
 		return -ETIMEDOUT;
@@ -668,10 +666,8 @@ static int really_probe(struct device *dev, const struct device_driver *drv)
 	}
 
 	link_ret = device_links_check_suppliers(dev);
-	pr_err("GNTCORE: %s links_check_suppliers=%d\n", dev_name(dev), link_ret);
 	if (link_ret == -EPROBE_DEFER)
 		return link_ret;
-	pr_err("GNTCORE: %s really_probe proceeding to bus->probe\n", dev_name(dev));
 
 	dev_dbg(dev, "bus: '%s': %s: probing driver %s with device\n",
 		drv->bus->name, __func__, drv->name);
