@@ -55,7 +55,7 @@
 		 * was added for. Plain tty0 plus warning-level messages is enough,
 		 * and /proc/sys/kernel/printk can still raise the level at runtime.
 		 */
-		bootargs = "reboot=warm loglevel=4 panic=10 console=tty0 fbcon=nodefer clk_ignore_unused pd_ignore_unused fw_devlink=off root=PARTLABEL=userdata rootfstype=ext4 rw rootwait softlockup_panic=1";
+		bootargs = "reboot=warm loglevel=4 panic=0 console=tty0 fbcon=nodefer clk_ignore_unused pd_ignore_unused fw_devlink=off root=PARTLABEL=userdata rootfstype=ext4 rw rootwait";
 		kaslr-seed = <0 0>;
 
 		fb0: framebuffer@7ed80000 {
