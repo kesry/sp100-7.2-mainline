@@ -7424,6 +7424,7 @@ static irqreturn_t ufshcd_intr(int irq, void *__hba)
 	    (!(enabled_intr_status & UTP_TRANSFER_REQ_COMPL) ||
 	     hba->outstanding_reqs) && !ufshcd_eh_in_progress(hba)) {
 		static DEFINE_RATELIMIT_STATE(intr_rl, 10 * HZ, 3);
+		static unsigned long last_divergence_recovery;
 
 		if (__ratelimit(&intr_rl)) {
 			dev_err(hba->dev,
@@ -7432,6 +7433,32 @@ static irqreturn_t ufshcd_intr(int irq, void *__hba)
 				enabled_intr_status);
 			ufshcd_dump_regs(hba, 0, UFSHCI_REG_SPACE_SIZE,
 					 "host_regs: ");
+		}
+
+		/*
+		 * UFS_INTR_DIVERGENCE_RECOVERY
+		 *
+		 * An unhandled completion while requests are still
+		 * outstanding means the controller's view of the world has
+		 * diverged from ours: those requests will never complete,
+		 * writeback hangs in folio_wait_writeback, hung tasks pile
+		 * up and the box dies with nothing on the console. That is
+		 * exactly how this board wedged: 818 seconds into uptime the
+		 * controller started asserting completions nobody owned, and
+		 * every I/O from then on waited forever.
+		 *
+		 * Recover through the error handler, which resets the host
+		 * controller and the link and retries the outstanding I/O.
+		 * Once per ten seconds is enough; the recovery itself needs
+		 * a moment to run.
+		 */
+		if (hba->outstanding_reqs &&
+		    time_after(jiffies, last_divergence_recovery + 10 * HZ)) {
+			last_divergence_recovery = jiffies;
+			dev_err(hba->dev,
+				"state divergence with %d outstanding requests, forcing error recovery\n",
+				hba->outstanding_reqs);
+			ufshcd_force_error_recovery(hba);
 		}
 	}
 
