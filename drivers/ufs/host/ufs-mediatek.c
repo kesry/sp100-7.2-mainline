@@ -808,6 +808,37 @@ static void ufs_mtk_spm_request_occupy(struct ufs_hba *hba)
 			 "UFS_SPM: SPM shows NO ufs request - occupation failed\n");
 	else
 		dev_info(hba->dev, "UFS_SPM: occupation in place\n");
+
+	/*
+	 * UFS_MBOX3_DUMP
+	 *
+	 * MCUPM mailbox 3 carries the LPM power-policy fields (PWR_CTRL,
+	 * L3_MODE, BUCK_MODE, PLL_MODE). With no LPM driver coordinating,
+	 * the firmware acts on whatever the bootloader left there. Dump the
+	 * policy block so the wedge trigger can be correlated with the
+	 * firmware's actual marching orders.
+	 */
+	{
+		void __iomem *mb;
+		u32 v[8];
+		int k;
+
+		mb = devm_ioremap(hba->dev, 0x0c55fd80, 0xa0);
+		if (!mb) {
+			dev_info(hba->dev, "UFS_MBOX3: ioremap failed\n");
+		} else {
+			for (k = 0; k < 8; k++)
+				v[k] = readl(mb + k * 4);
+			dev_info(hba->dev,
+				 "UFS_MBOX3: %08x %08x %08x %08x %08x %08x %08x %08x\n",
+				 v[0], v[1], v[2], v[3],
+				 v[4], v[5], v[6], v[7]);
+			dev_info(hba->dev,
+				 "UFS_MBOX3: task=%u pwr_ctrl=%u l3=%u buck=%u pll=%u\n",
+				 (v[0] & 0xff), (v[1] & 0xff),
+				 (v[0] >> 8) & 0xff, 0, 0);
+		}
+	}
 }
 
 static void ufs_mtk_mcq_disable_irq(struct ufs_hba *hba)

@@ -55,7 +55,7 @@
 		 * was added for. Plain tty0 plus warning-level messages is enough,
 		 * and /proc/sys/kernel/printk can still raise the level at runtime.
 		 */
-		bootargs = "irqaffinity=1-7 reboot=warm loglevel=4 panic=0 console=tty0 fbcon=nodefer clk_ignore_unused pd_ignore_unused fw_devlink=off root=PARTLABEL=userdata rootfstype=ext4 rw rootwait";
+		bootargs = "irqaffinity=1-7 module_blacklist=wmt_drv,wlan_6833_axi,wmt_chrdev_wifi,btif,btmtk_stp reboot=warm loglevel=4 panic=0 console=tty0 fbcon=nodefer clk_ignore_unused pd_ignore_unused fw_devlink=off root=PARTLABEL=userdata rootfstype=ext4 rw rootwait";
 		kaslr-seed = <0 0>;
 
 		fb0: framebuffer@7ed80000 {
@@ -1175,14 +1175,16 @@
 		 * fail with error c0010011.
 		 */
 		pmic = <&mt6359>;
-		status = "okay";
+		/* CONNSYS_DISABLED_EXPERIMENT: see docs/73 section 9.4 */
+		status = "disabled";
 	};
 	wifi: wifi@18000000 {
 		compatible = "mediatek,wifi";
 		reg = <0 0x18000000 0 0x100000>;
 		interrupts = <GIC_SPI 377 IRQ_TYPE_LEVEL_HIGH>;
 		memory-region = <&wifi_reserved>;
-		status = "okay";
+		/* CONNSYS_DISABLED_EXPERIMENT */
+		status = "disabled";
 	};
 
 	/*
@@ -1198,7 +1200,7 @@
 		record-size = <0x20000>;
 		console-size = <0x40000>;
 		pmsg-size = <0x20000>;
-		ftrace-size = <0>;
+		ftrace-size = <0x20000>;
 		ecc-size = <16>;
 	};
 
