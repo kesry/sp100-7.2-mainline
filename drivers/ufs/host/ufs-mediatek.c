@@ -1825,6 +1825,8 @@ static int ufs_mtk_device_reset(struct ufs_hba *hba)
 	struct arm_smccc_res res;
 
 	ufs_mtk_device_reset_ctrl(0, res);
+	if (res.a0)
+		dev_warn(hba->dev, "device reset assert SMC returned %lu\n", res.a0);
 
 	/* disable hba in middle of device reset */
 	ufshcd_hba_stop(hba);
@@ -1839,9 +1841,13 @@ static int ufs_mtk_device_reset(struct ufs_hba *hba)
 	usleep_range(10, 15);
 
 	ufs_mtk_device_reset_ctrl(1, res);
+	if (res.a0)
+		dev_warn(hba->dev, "device reset deassert SMC returned %lu\n", res.a0);
 
-	/* Some devices may need time to respond to rst_n */
-	usleep_range(10000, 15000);
+	/* Some devices may need time to respond to rst_n. A device that
+	 * was wedged before the reset needs its own firmware to boot:
+	 * give it a full 100 ms before the link startup runs. */
+	usleep_range(100000, 105000);
 
 	dev_info(hba->dev, "device reset done\n");
 
