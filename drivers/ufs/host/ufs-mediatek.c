@@ -44,8 +44,7 @@ static void _ufs_mtk_clk_scale(struct ufs_hba *hba, bool scale_up);
 static const struct ufs_dev_quirk ufs_mtk_dev_fixups[] = {
 	{ .wmanufacturerid = UFS_ANY_VENDOR,
 	  .model = UFS_ANY_MODEL,
-	  .quirk = UFS_DEVICE_QUIRK_DELAY_AFTER_LPM |
-		   UFS_DEVICE_QUIRK_DELAY_BEFORE_LPM },
+	  .quirk = UFS_DEVICE_QUIRK_DELAY_BEFORE_LPM },
 	{ .wmanufacturerid = UFS_VENDOR_SKHYNIX,
 	  .model = "H9HQ21AFAMZDAR",
 	  .quirk = UFS_DEVICE_QUIRK_SUPPORT_EXTENDED_FEATURES },
@@ -2554,6 +2553,29 @@ static void ufs_mtk_config_scsi_dev(struct scsi_device *sdev)
  * outstanding I/O is retried.
  */
 
+/*
+ * UFS_MTK_POST_LPM_DELAY
+ *
+ * The device needs a delay after exiting low power mode before it can
+ * accept UIC commands. Without it the first command after every
+ * hibernate exit is sent to a device whose RX/SYS clocks are still
+ * restarting; the device NACs it at the data link layer (80000001
+ * NAC_RECEIVED) and the controller wedges with orphaned outstanding
+ * requests - the periodic UFS controller death on this board. The
+ * MT6833-Mainline community tree carries
+ * UFS_DEVICE_QUIRK_DELAY_AFTER_LPM for the same controller; that quirk
+ * was removed upstream, so implement the delay in the glue via the
+ * hibern8_notify POST_CHANGE hook (1 ms, matching the old quirk
+ * behavior).
+ */
+static void ufs_mtk_hibern8_notify(struct ufs_hba *hba,
+				     enum uic_cmd_dme cmd,
+				     enum ufs_notify_change_status status)
+{
+	if (status == POST_CHANGE && cmd == UIC_CMD_DME_HIBER_EXIT)
+		usleep_range(1000, 1100);
+}
+
 static const struct ufs_hba_variant_ops ufs_hba_mtk_vops = {
 	.name                = "mediatek.ufshci",
 	.max_num_rtt         = MTK_MAX_NUM_RTT,
@@ -2561,6 +2583,7 @@ static const struct ufs_hba_variant_ops ufs_hba_mtk_vops = {
 	.get_ufs_hci_version = ufs_mtk_get_ufs_hci_version,
 	.setup_clocks        = ufs_mtk_setup_clocks,
 	.hce_enable_notify   = ufs_mtk_hce_enable_notify,
+	.hibern8_notify      = ufs_mtk_hibern8_notify,
 	.link_startup_notify = ufs_mtk_link_startup_notify,
 	.negotiate_pwr_mode  = ufs_mtk_negotiate_pwr_mode,
 	.pwr_change_notify   = ufs_mtk_pwr_change_notify,
