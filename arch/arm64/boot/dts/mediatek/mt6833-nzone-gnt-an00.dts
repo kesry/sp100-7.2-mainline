@@ -1103,13 +1103,13 @@
 		 * separately now by UFS_MTK_SHUTDOWN_PWR_CTRL_OFF, which forces
 		 * clk_pwr_off = true when hba->shutting_down is set.
 		 */
-		mediatek,auto-hibern8-us = <10>
+		mediatek,auto-hibern8-us = <10000>
 		/*
 		 * UFS_AH8_STOCK_RHYTHM
 		 *
-		 * The stock DT enables auto-hibern8 with timer=0x0a, which in
-		 * MTK units is 10 us: the device hibernates on EVERY brief idle
-		 * window and spends most of its life in hibernate. That is the
+		 * The stock DT enables auto-hibern8 with timer=0x0a, which the vendor
+		 * driver interprets as 10 ms: the device hibernates during idle
+		 * windows, its validated low-power operating point. That is the
 		 * operating point this SKhynix device was validated in. Forcing
 		 * the device to stay active forever (ah8=0 + rpm_lvl=0) was
 		 * part of the wedge hunt and correlates with the device
