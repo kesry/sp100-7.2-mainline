@@ -22,10 +22,10 @@ jobs:
 
       - name: Kernel config
         run: |
-          # the committed config carries every option the device needs:
-          # display, GPU, KVM, UFS, networking
-          cp kernel.config .config
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+          # arch/arm64/configs/gnt_an00_defconfig is the single source of truth
+          # for this board - display, GPU, KVM, UFS, networking, AppArmor and
+          # the container/VM prerequisites all live there.
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- gnt_an00_defconfig
 
       - name: Build kernel and modules
         run: |
