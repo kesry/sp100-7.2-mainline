@@ -2535,6 +2535,29 @@ static void ufs_mtk_config_scsi_dev(struct scsi_device *sdev)
  * The variant operations configure the necessary controller and PHY
  * handshake during initialization.
  */
+/*
+ * UFS_MTK_DEVICE_RESET_VOP
+ *
+ * The device-side reset line is toggled through ATF (SIP_DEVICE_RESET).
+ * The core's error recovery (ufshcd_reset_and_restore) calls this before
+ * the host reset: when the device firmware has wedged and NACs every
+ * UIC command, a host-only reset cannot reach it - the device must be
+ * reset first. With this vop the wedge becomes a brief stall: the
+ * device reboots, the link restarts against a fresh device, and the
+ * outstanding I/O is retried.
+ */
+static int ufs_mtk_device_reset(struct ufs_hba *hba)
+{
+	struct arm_smccc_res res;
+
+	ufs_mtk_device_reset_ctrl(0, res);
+	mdelay(10);
+	ufs_mtk_device_reset_ctrl(1, res);
+	mdelay(10);
+	dev_info(hba->dev, "device reset via SIP completed\n");
+	return 0;
+}
+
 static const struct ufs_hba_variant_ops ufs_hba_mtk_vops = {
 	.name                = "mediatek.ufshci",
 	.max_num_rtt         = MTK_MAX_NUM_RTT,
@@ -2547,6 +2570,7 @@ static const struct ufs_hba_variant_ops ufs_hba_mtk_vops = {
 	.pwr_change_notify   = ufs_mtk_pwr_change_notify,
 	.apply_dev_quirks    = ufs_mtk_apply_dev_quirks,
 	.fixup_dev_quirks    = ufs_mtk_fixup_dev_quirks,
+	.device_reset        = ufs_mtk_device_reset,
 	.suspend             = ufs_mtk_suspend,
 	.resume              = ufs_mtk_resume,
 	.dbg_register_dump   = ufs_mtk_dbg_register_dump,
