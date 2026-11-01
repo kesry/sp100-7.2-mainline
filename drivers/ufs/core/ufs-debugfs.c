@@ -182,7 +182,7 @@ static ssize_t ufs_saved_err_write(struct file *file, const char __user *buf,
 		ret = -ENOENT;
 	}
 	if (ret == 0)
-		ufshcd_schedule_eh_work(hba);
+		ufshcd_schedule_eh_work(hba, false);
 	spin_unlock_irq(hba->host->host_lock);
 
 	return ret < 0 ? ret : count;

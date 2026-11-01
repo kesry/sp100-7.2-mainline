@@ -109,7 +109,7 @@ static int wait_ready(struct panfrost_device *pfdev, u32 as_nr)
 		pfdev->mmu_stuck = true;
 		/* The GPU hung, let's trigger a reset */
 		panfrost_device_schedule_reset(pfdev);
-		dev_err(pfdev->base.dev,
+		dev_err_ratelimited(pfdev->base.dev,
 			"AS_ACTIVE bit stuck, MMU marked dead (further MMU ops will fail fast)\n");
 	}
 

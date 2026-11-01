@@ -55,7 +55,7 @@
 		 * was added for. Plain tty0 plus warning-level messages is enough,
 		 * and /proc/sys/kernel/printk can still raise the level at runtime.
 		 */
-		bootargs = "irqaffinity=1-7 reboot=warm loglevel=4 panic=0 console=tty0 fbcon=nodefer clk_ignore_unused pd_ignore_unused fw_devlink=off root=PARTLABEL=userdata rootfstype=ext4 rw rootwait";
+		bootargs = "irqaffinity=1-7 reboot=warm loglevel=4 panic=0 console=tty0 fbcon=nodefer clk_ignore_unused pd_ignore_unused fw_devlink=off root=PARTLABEL=userdata rootfstype=ext4 rw rootwait hung_task_timeout_secs=60";
 		kaslr-seed = <0 0>;
 
 		fb0: framebuffer@7ed80000 {
@@ -269,9 +269,40 @@
 		 * "input bias disabled" for GPIO30. Same trap as drive-strength in
 		 * this group, which aborts the whole group before pinmux is written.
 		 */
+		/*
+		 * MISO (GPIO30) pull-up.
+		 *
+		 * The controller tri-states MISO between transfers and this board has
+		 * no external pull on that line, so an unpulled input reads as
+		 * floating noise instead of the Chipone ID at register 0x0A00.
+		 *
+		 * `pinmux` here is mandatory, not decoration. Every subnode of a
+		 * pinctrl state goes through mtk_pctrl_dt_subnode_to_map()
+		 * (drivers/pinctrl/mediatek/pinctrl-paris.c), which begins with
+		 *
+		 *     pins = of_find_property(node, "pinmux", NULL);
+		 *     if (!pins) {
+		 *             dev_err(hw->dev, "missing pins property in node %pOFn .
+", node);
+		 *             return -EINVAL;
+		 *     }
+		 *
+		 * So a conf-only subnode (pins = "GPIO30"; bias-pull-up;) is rejected
+		 * outright - the message says "missing pins" but what it actually
+		 * requires is "pinmux". The driver has no PIN_MAP_TYPE_CONFIGS_PIN
+		 * path either, so bias cannot be applied to a single pin on its own.
+		 *
+		 * Worse, that -EINVAL fails the whole pinctrl-0 state, so spi1_pins
+		 * never gets programmed either and pins 27-30 stay unclaimed:
+		 *   mt6833-pinctrl: missing pins property in node pins-mi
+		 *   pin 27..30 (GPIO27..30): (MUX UNCLAIMED)
+		 *
+		 * Restating SPI1_MI's own mux here is harmless and gives the bias
+		 * config a real group to attach to.
+		 */
 		spi1_mi_bias: spi1-mi-bias {
 			pins-mi {
-				pins = "GPIO30";
+				pinmux = <PINMUX_GPIO30__FUNC_SPI1_MI>;
 				bias-pull-up;
 			};
 		};
@@ -288,6 +319,31 @@
 				pinmux = <PINMUX_GPIO14__FUNC_GPIO14>;
 				bias-disable;
 			};
+		};
+
+		/*
+		 * Touch controller reset, held high from early boot.
+		 *
+		 * The stock device tree drives GPIO15 from the touch driver through
+		 * a pinctrl state - "rstoutput1" is pinmux 0xf00 (plain GPIO, not a
+		 * peripheral function), slew-rate 1, output-high. Our spidev-based
+		 * setup has no such driver, so nothing ever released the line and
+		 * the controller stayed in reset: every SPI read returned 0x00
+		 * regardless of mode, speed or data pattern.
+		 *
+		 * A gpio-hog makes the pinctrl driver claim GPIO15 at boot and drive
+		 * it high, which is where the stock rstoutput1 state ends up.
+		 * Driving it by hand with gpioset works too, but leaves a userspace
+		 * process holding the line, and it dies with the session.
+		 *
+		 * c5a79747c added this; 74cfb6408 removed it while chasing an
+		 * unrelated problem. Put it back.
+		 */
+		touch_rst_hog: touch-rst-hog {
+			gpio-hog;
+			gpios = <15 GPIO_ACTIVE_HIGH>;
+			output-high;
+			line-name = "touch-rst";
 		};
 
 		/*
@@ -643,27 +699,36 @@
 				ldo2 {
 					regulator-name = "vtp";
 					/*
-					 * Same range as the factory device tree.
-					 * Pinning min == max would make the core
-					 * reprogram the rail and throw away whatever
-					 * voltage the bootloader had already set, so
-					 * keep the range wide and let the hardware
-					 * value stand.
-					 */
-					/*
-					 * TOUCH_VTP_3V0
+					 * TOUCH_VTP_3V0 - actually pinned this time.
 					 *
-					 * Diagnostic: pin the rail to 3.0 V so the
-					 * regulator core actually programs it instead
-					 * of keeping whatever the bootloader left
-					 * (measured: 1.8 V). ChipOne parts normally
-					 * run their VDD at 2.8-3.3 V and the Android
-					 * driver raises the rail in its power-on
-					 * sequence, so 1.8 V may simply be the
-					 * pre-init value LK leaves behind.
+					 * The earlier attempt only wrote this comment and
+					 * left the constraints wide open (1200000 to
+					 * 3600000), so regulator_init_complete() saw nothing
+					 * to program and the rail stayed at whatever LK had
+					 * left behind - measured 1.8 V.
+					 *
+					 * Setting min == max is what forces the core to
+					 * program the rail. What it costs is that the value
+					 * LK chose is discarded; that is the point of the
+					 * experiment.
+					 *
+					 * Why 3.0 V: the factory device tree declares this
+					 * rail with regulator-max-microvolt = 0x36ee80
+					 * (3.6 V) and lets the Android touch driver pick the
+					 * working value at power-on, which strongly suggests
+					 * the hardware tolerates 3.3 V. ChipOne controllers
+					 * typically run VDD at 2.8-3.3 V; 1.8 V is the value
+					 * the bootloader happens to leave, not necessarily
+					 * the operating point.
+					 *
+					 * Symptom this is meant to fix: with the rail at
+					 * 1.8 V the controller never responds - MISO reads a
+					 * constant 0x00 for every SPI mode, speed and data
+					 * pattern, and INT (GPIO14) stays low through
+					 * continuous transfers.
 					 */
-					regulator-min-microvolt = <1200000>;
-					regulator-max-microvolt = <3600000>;
+					regulator-min-microvolt = <3000000>;
+					regulator-max-microvolt = <3000000>;
 					regulator-boot-on;
 					regulator-always-on;
 				};
@@ -740,9 +805,9 @@
 		 *   RST low  -> MISO reads 0x7a  (chip held in reset, high-Z)
 		 *   RST high -> MISO reads 0x00  (chip alive, driving low)
 		 *
-		 * The line is actually released by the touch-rst-hog node below,
-		 * which makes the pinctrl driver claim GPIO15 at boot and drive it
-		 * high.
+		 * The line is released by the touch_rst_hog node in the pinctrl
+		 * block, which makes the pinctrl driver claim GPIO15 at boot and
+		 * drive it high.
 		 */
 		touch-rst-gpios = <&pinctrl 15 GPIO_ACTIVE_HIGH>;
 		#address-cells = <1>;
@@ -771,7 +836,19 @@
 			 * controller shifts every byte the wrong way round and the
 			 * chip never answers (MISO looks like a floating line).
 			 */
-			spi-lsb-first;
+			/*
+			 * No spi-lsb-first here.
+			 *
+			 * The factory dtbo sets mtk_rx_mlsb = mtk_tx_mlsb = 1, which
+			 * looks like it should map to SPI_LSB_FIRST. It does not: on
+			 * MediaTek's controller those bits select MSB-first, the
+			 * opposite of what the SPI framework flag means.
+			 *
+			 * Same frame, same addresses, measured both ways:
+			 *   MSB first: 0x0000 -> d6cb6090, five reads identical
+			 *   LSB first: every address -> ffffffff
+			 */
+
 		};
 	};
 
@@ -1103,7 +1180,7 @@
 		 * separately now by UFS_MTK_SHUTDOWN_PWR_CTRL_OFF, which forces
 		 * clk_pwr_off = true when hba->shutting_down is set.
 		 */
-		mediatek,auto-hibern8-us = <10000>
+		mediatek,auto-hibern8-us = <10000>;
 		/*
 		 * UFS_AH8_STOCK_RHYTHM
 		 *
@@ -1116,7 +1193,20 @@
 		 * firmware wedging (NAC_RECEIVED storms, DME unreachable).
 		 * Restore the stock rhythm: hibernate early, wake on demand.
 		 */
-;
+
+			/*
+			 * Factory values from the stock dtbo (ufshci@11270000).
+			 *
+			 * mediatek,spm-level decides how the vendor driver coordinates
+			 * UFS power with SPM. It was left unset here and the driver
+			 * fell back to its default, which is the one piece of the
+			 * stock configuration we were missing outright.
+			 */
+			mediatek,spm-level = <3>;
+			mediatek,rpm-enable = <1>;
+			mediatek,rpm-autosuspend-delay = <2000>;
+			mediatek,rpm-level = <3>;
+			ufs-tw;
 		status = "okay";
 	};
 	ufsphy: ufs-phy@11fa0000 {

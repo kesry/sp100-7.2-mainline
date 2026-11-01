@@ -329,7 +329,15 @@ static int psci_sys_reset(struct notifier_block *nb, unsigned long action,
 		 */
 		pr_emerg("PSCI_RESET_TRACE: calling SYSTEM_RESET2\n");
 		invoke_psci_fn(PSCI_FN_NATIVE(1_1, SYSTEM_RESET2), 0, 0, 0);
-		pr_emerg("PSCI_RESET_TRACE: SYSTEM_RESET2 returned, firmware did not reset\n");
+		/*
+		 * The firmware declined the warm reset. Fall through to the cold
+		 * reset instead of abandoning the attempt and waiting for the
+		 * watchdog - firmware that refuses SYSTEM_RESET2 may still honour
+		 * SYSTEM_RESET.
+		 */
+		pr_emerg("PSCI_RESET_TRACE: SYSTEM_RESET2 returned, trying SYSTEM_RESET\n");
+		invoke_psci_fn(PSCI_0_2_FN_SYSTEM_RESET, 0, 0, 0);
+		pr_emerg("PSCI_RESET_TRACE: SYSTEM_RESET returned, firmware did not reset\n");
 	} else {
 		pr_emerg("PSCI_RESET_TRACE: calling SYSTEM_RESET (cold), reset2_supported=%d\n",
 			 psci_system_reset2_supported);

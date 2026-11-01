@@ -205,6 +205,69 @@ static void ufs_mtk_crypto_enable(struct ufs_hba *hba)
 	}
 }
 
+/*
+ * INFRA_AO block reset bits for UFS (vendor ufs-mtk-platform.h assignment).
+ *
+ * infracfg_ao@10001000, 0x1000 window. 0x130/0x134 are the UFSHCI set/clear
+ * pair, 0x140/0x144 the UniPro and UFSPHY pair. Writing a bit into SET
+ * asserts the block reset, writing it into CLR releases it.
+ */
+#define INFRA_AO_UFSHCI_SW_RST_SET	0x130
+#define INFRA_AO_UFSHCI_SW_RST_CLR	0x134
+#define INFRA_AO_UFSHCI_SW_RST_BIT	15
+#define INFRA_AO_UNIPRO_SW_RST_SET	0x140
+#define INFRA_AO_UNIPRO_SW_RST_CLR	0x144
+#define INFRA_AO_UNIPRO_SW_RST_BIT	7
+#define INFRA_AO_UFSPHY_SW_RST_SET	0x140
+#define INFRA_AO_UFSPHY_SW_RST_CLR	0x144
+#define INFRA_AO_UFSPHY_SW_RST_BIT	9
+
+static struct regmap *ufs_mtk_infra_ao_regmap;
+
+/*
+ * Hold a block reset on UFSHCI, UniPro and UFSPHY for 10 us, then release it.
+ *
+ * regmap takes a mutex, so this must not be called from atomic context. The
+ * only caller is ufs_mtk_device_reset(), which runs on the SCSI error handler
+ * workqueue.
+ */
+static void ufs_mtk_infra_sw_rst(struct ufs_hba *hba)
+{
+	struct regmap *map = ufs_mtk_infra_ao_regmap;
+	u32 v;
+
+	if (!map)
+		return;
+
+	/* Assert all three block resets. */
+	regmap_read(map, INFRA_AO_UFSHCI_SW_RST_SET, &v);
+	regmap_write(map, INFRA_AO_UFSHCI_SW_RST_SET,
+		     v | BIT(INFRA_AO_UFSHCI_SW_RST_BIT));
+	regmap_read(map, INFRA_AO_UNIPRO_SW_RST_SET, &v);
+	regmap_write(map, INFRA_AO_UNIPRO_SW_RST_SET,
+		     v | BIT(INFRA_AO_UNIPRO_SW_RST_BIT));
+	regmap_read(map, INFRA_AO_UFSPHY_SW_RST_SET, &v);
+	regmap_write(map, INFRA_AO_UFSPHY_SW_RST_SET,
+		     v | BIT(INFRA_AO_UFSPHY_SW_RST_BIT));
+
+	udelay(10);
+
+	/* Release them again. */
+	regmap_read(map, INFRA_AO_UFSHCI_SW_RST_CLR, &v);
+	regmap_write(map, INFRA_AO_UFSHCI_SW_RST_CLR,
+		     v | BIT(INFRA_AO_UFSHCI_SW_RST_BIT));
+	regmap_read(map, INFRA_AO_UNIPRO_SW_RST_CLR, &v);
+	regmap_write(map, INFRA_AO_UNIPRO_SW_RST_CLR,
+		     v | BIT(INFRA_AO_UNIPRO_SW_RST_BIT));
+	regmap_read(map, INFRA_AO_UFSPHY_SW_RST_CLR, &v);
+	regmap_write(map, INFRA_AO_UFSPHY_SW_RST_CLR,
+		     v | BIT(INFRA_AO_UFSPHY_SW_RST_BIT));
+
+	udelay(10);
+
+	dev_info(hba->dev, "INFRA_AO block reset done (HCI/UniPro/UFSPHY)\n");
+}
+
 static void ufs_mtk_host_reset(struct ufs_hba *hba)
 {
 	struct ufs_mtk_host *host = ufshcd_get_variant(hba);
@@ -344,9 +407,6 @@ static int ufs_mtk_bind_mphy(struct ufs_hba *hba)
 
 static int ufs_mtk_setup_ref_clk(struct ufs_hba *hba, bool on)
 {
-	dev_warn(hba->dev, "UFS_TRACE: ref_clk %s\n", on ? "on" : "off");
-	dev_warn(hba->dev, "UFS_TRACE: ref_clk %s\n", on ? "on" : "off");
-	pr_info("UFS_TRACE: ref_clk %s\n", on ? "on" : "off");
 	struct ufs_mtk_host *host = ufshcd_get_variant(hba);
 	struct arm_smccc_res res;
 	ktime_t timeout, time_checked;
@@ -1468,6 +1528,28 @@ static int ufs_mtk_init(struct ufs_hba *hba)
 	if (host->caps & UFS_MTK_CAP_DISABLE_MCQ)
 		hba->quirks |= UFSHCD_QUIRK_BROKEN_LSDBS_CAP;
 
+
+	/*
+	 * Get a handle on infracfg_ao so the error path can hard-reset the UFS
+	 * block. The region is already claimed by the clock driver through its
+	 * syscon node, so ask syscon rather than mapping the page again.
+	 * Failure is not fatal: ufs_mtk_infra_sw_rst() skips a NULL regmap.
+	 */
+	if (!ufs_mtk_infra_ao_regmap) {
+		struct device_node *np;
+
+		np = of_find_compatible_node(NULL, NULL, "mediatek,mt6833-infracfg_ao");
+		if (np) {
+			ufs_mtk_infra_ao_regmap = syscon_node_to_regmap(np);
+			of_node_put(np);
+			if (IS_ERR(ufs_mtk_infra_ao_regmap)) {
+				dev_info(hba->dev,
+					 "no infracfg_ao regmap, block reset disabled\n");
+				ufs_mtk_infra_ao_regmap = NULL;
+			}
+		}
+	}
+
 	ufs_mtk_init_clocks(hba);
 
 	/*
@@ -1835,6 +1917,22 @@ static int ufs_mtk_link_startup_notify(struct ufs_hba *hba,
 static int ufs_mtk_device_reset(struct ufs_hba *hba)
 {
 	struct arm_smccc_res res;
+
+	/*
+	 * Reset the host controller block FIRST, while the device is still idle.
+	 *
+	 * Doing it after RST_N is released tears down the UniPro link underneath
+	 * a device that has already started its own boot sequence. The probes
+	 * show the result: link_startup still returns 0 because the UniPro
+	 * handshake works, but the Query Flag issued immediately afterwards is
+	 * never answered - the doorbell register takes the write, no interrupt
+	 * is raised, and the error handler blocks for 112 s until hung_task
+	 * panics.
+	 *
+	 * LK brings this same hardware up from scratch and the device works
+	 * afterwards, so ordering is what differs here.
+	 */
+	ufs_mtk_infra_sw_rst(hba);
 
 	ufs_mtk_device_reset_ctrl(0, res);
 	if (res.a0)

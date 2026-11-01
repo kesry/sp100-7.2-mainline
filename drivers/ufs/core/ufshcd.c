@@ -327,6 +327,7 @@ static const struct ufs_dev_quirk ufs_fixups[] = {
 static irqreturn_t ufshcd_tmc_handler(struct ufs_hba *hba);
 static void ufshcd_async_scan(void *data, async_cookie_t cookie);
 static int ufshcd_reset_and_restore(struct ufs_hba *hba);
+static void ufshcd_complete_dangling(struct ufs_hba *hba);
 static int ufshcd_eh_host_reset_handler(struct scsi_cmnd *cmd);
 static int ufshcd_clear_tm_cmd(struct ufs_hba *hba, int tag);
 static void ufshcd_hba_exit(struct ufs_hba *hba);
@@ -1958,6 +1959,15 @@ void ufshcd_hold(struct ufs_hba *hba)
 {
 	bool flush_result;
 	unsigned long flags;
+	/*
+	 * Bound the retry loops so a link that will not leave HIBERN8 cannot
+	 * spin here for ever. ufshcd_ungate_work() returns early when the state
+	 * is already CLKS_ON, so flushing it does not move the link; if the
+	 * auto-hibern8 timer keeps it in HIBERN8 the `goto start` below would
+	 * re-read CLKS_ON and loop with interrupts disabled, taking the machine
+	 * down instead of failing the command.
+	 */
+	int retries = 10;
 
 	if (!ufshcd_is_clkgating_allowed(hba) ||
 	    !hba->clk_gating.is_initialized)
@@ -1966,6 +1976,13 @@ void ufshcd_hold(struct ufs_hba *hba)
 	hba->clk_gating.active_reqs++;
 
 start:
+	if (!retries--) {
+		spin_unlock_irqrestore(&hba->clk_gating.lock, flags);
+		dev_err(hba->dev,
+			"%s: link stuck in HIBERN8 (state %d), giving up after %d retries\n",
+			__func__, hba->clk_gating.state, 10);
+		return;
+	}
 	switch (hba->clk_gating.state) {
 	case CLKS_ON:
 		/*
@@ -3138,7 +3155,7 @@ out:
 		unsigned long flags;
 
 		spin_lock_irqsave(hba->host->host_lock, flags);
-		ufshcd_schedule_eh_work(hba);
+		ufshcd_schedule_eh_work(hba, false);
 		spin_unlock_irqrestore(hba->host->host_lock, flags);
 	}
 
@@ -3332,7 +3349,35 @@ static int ufshcd_issue_dev_cmd(struct ufs_hba *hba, struct scsi_cmnd *cmd,
 	blk_status_t sts;
 
 	rq->timeout = timeout;
-	sts = blk_execute_rq(rq, true);
+
+	/*
+	 * This queue is quiesced exactly during error recovery: the breadcrumbs
+	 * show quiesced=0 qdepth=0 on every boot-time submission and
+	 * quiesced=1 qdepth=1 on the one that wedged.
+	 *
+	 * ufshcd_err_handling_prepare() quiesces the tag set before the handler
+	 * runs, and only ufshcd_err_handling_unprepare() releases it - but
+	 * unprepare() cannot run while the handler is blocked here. Meanwhile
+	 * blk_execute_rq() inserts the request and asks blk-mq to dispatch;
+	 * blk_mq_run_hw_queue() refuses whenever blk_queue_quiesced() is true, so
+	 * the request is never handed to the driver, blk_wait_io() waits for a
+	 * completion that cannot arrive, the handler never returns, and the tag
+	 * set stays quiesced for good. Every other I/O then blocks in
+	 * blk_mq_get_tag and the desktop freezes.
+	 *
+	 * Lift the quiesce around our own submission. The queue is ours for the
+	 * whole duration of the handler, so this cannot race with another user.
+	 * The blk_queue_quiesced() test keeps the cold-boot path untouched: there
+	 * the depth is already 0 and blk_mq_unquiesce_queue() would warn.
+	 */
+	if (blk_queue_quiesced(rq->q)) {
+		blk_mq_unquiesce_queue(rq->q);
+		sts = blk_execute_rq(rq, true);
+		blk_mq_quiesce_queue(rq->q);
+	} else {
+		sts = blk_execute_rq(rq, true);
+	}
+
 	if (sts != BLK_STS_OK)
 		return blk_status_to_errno(sts);
 	return lrbp->utr_descriptor_ptr->header.ocs;
@@ -4480,7 +4525,7 @@ out:
 	hba->uic_async_done = NULL;
 	if (ret && !hba->pm_op_in_progress) {
 		ufshcd_set_link_broken(hba);
-		ufshcd_schedule_eh_work(hba);
+		ufshcd_schedule_eh_work(hba, false);
 	}
 out_unlock:
 	spin_unlock_irqrestore(hba->host->host_lock, flags);
@@ -5126,6 +5171,7 @@ int ufshcd_hba_enable(struct ufs_hba *hba)
 {
 	int ret;
 
+
 	if (hba->quirks & UFSHCI_QUIRK_BROKEN_HCE) {
 		ufshcd_set_link_off(hba);
 		ufshcd_vops_hce_enable_notify(hba, PRE_CHANGE);
@@ -5255,6 +5301,7 @@ static int ufshcd_link_startup(struct ufs_hba *hba)
 {
 	int ret;
 	int retries = DME_LINKSTARTUP_RETRIES;
+
 	bool link_startup_again = false;
 
 	/*
@@ -5302,9 +5349,6 @@ link_startup:
 		if (ret && retries) {
 			ufshcd_set_link_off(hba);
 			if (ufshcd_dme_reset(hba))
-				dev_err(hba->dev,
-					"%s: DME_RESET failed, retrying startup anyway\n",
-					__func__);
 			if (ufshcd_dme_enable(hba))
 				dev_err(hba->dev,
 					"%s: DME_ENABLE failed, retrying startup anyway\n",
@@ -5757,7 +5801,21 @@ static inline int ufshcd_transfer_rsp_status(struct ufs_hba *hba,
 		break;
 	case OCS_ABORTED:
 	case OCS_INVALID_COMMAND_STATUS:
-		result |= DID_REQUEUE << 16;
+			/*
+			 * Requeue is right when a live link hiccupped, but not during
+			 * a reset: the controller was hard-reset, the tag is gone, and
+			 * re-issuing under the stale request leaves the block layer
+			 * waiting for a completion that cannot arrive. Its pages then
+			 * stay in writeback, jbd2 parks in folio_wait_writeback, and
+			 * hung_task panics a minute after UFS itself recovered.
+			 *
+			 * Fail it instead so the bio is unwound.
+			 */
+			if (ufshcd_eh_in_progress(hba) ||
+			    hba->ufshcd_state == UFSHCD_STATE_RESET)
+				result |= DID_ERROR << 16;
+			else
+				result |= DID_REQUEUE << 16;
 		dev_warn(hba->dev, "OCS %s from controller for tag %d\n",
 			 ocs == OCS_ABORTED ? "aborted" : "invalid", tag);
 		break;
@@ -6692,12 +6750,21 @@ static inline bool ufshcd_is_saved_err_fatal(struct ufs_hba *hba)
 	       (hba->saved_err & (INT_FATAL_ERRORS | UFSHCD_UIC_HIBERN8_MASK));
 }
 
-void ufshcd_schedule_eh_work(struct ufs_hba *hba)
+void ufshcd_schedule_eh_work(struct ufs_hba *hba, bool force)
 {
 	lockdep_assert_held(hba->host->host_lock);
 
-	/* handle fatal errors only when link is not in error state */
-	if (hba->ufshcd_state != UFSHCD_STATE_ERROR) {
+	/*
+	 * handle fatal errors only when link is not in error state.
+	 *
+	 * `force` is for the divergence recovery: it fires when the controller
+	 * is asserting completions nobody owns, which by definition means the
+	 * recovery already attempted has not worked. If the driver has latched
+	 * UFSHCD_STATE_ERROR the guard below would drop the request silently and
+	 * nothing would ever reset that state - the wedge then sits there until
+	 * hung_task panics.
+	 */
+	if (force || hba->ufshcd_state != UFSHCD_STATE_ERROR) {
 		if (hba->force_reset || ufshcd_is_link_broken(hba) ||
 		    ufshcd_is_saved_err_fatal(hba))
 			hba->ufshcd_state = UFSHCD_STATE_EH_SCHEDULED_FATAL;
@@ -6709,10 +6776,26 @@ void ufshcd_schedule_eh_work(struct ufs_hba *hba)
 
 void ufshcd_force_error_recovery(struct ufs_hba *hba)
 {
-	spin_lock_irq(hba->host->host_lock);
+	unsigned long flags;
+
+	/*
+	 * irqsave/irqrestore, not spin_lock_irq/spin_unlock_irq.
+	 *
+	 * The divergence recovery in ufshcd_intr() runs in hard IRQ context with
+	 * interrupts already disabled, and spin_unlock_irq() would unconditionally
+	 * re-enable them:
+	 *
+	 *   irq 190 handler ufshcd_intr+0x0/0x84c enabled interrupts
+	 *   WARNING: kernel/irq/handle.c:214
+	 *
+	 * This is the same pattern every other interrupt-context caller of
+	 * ufshcd_schedule_eh_work() uses, and it is equally correct from process
+	 * context, so existing callers need no change.
+	 */
+	spin_lock_irqsave(hba->host->host_lock, flags);
 	hba->force_reset = true;
-	ufshcd_schedule_eh_work(hba);
-	spin_unlock_irq(hba->host->host_lock);
+	ufshcd_schedule_eh_work(hba, true);
+	spin_unlock_irqrestore(hba->host->host_lock, flags);
 }
 EXPORT_SYMBOL_GPL(ufshcd_force_error_recovery);
 
@@ -7083,12 +7166,27 @@ do_reset:
 
 		hba->force_reset = false;
 		spin_unlock_irqrestore(hba->host->host_lock, flags);
-		err = ufshcd_reset_and_restore(hba);
-		if (err)
-			dev_err(hba->dev, "%s: reset and restore failed with err %d\n",
+			err = ufshcd_reset_and_restore(hba);
+			if (err) {
+				dev_err(hba->dev,
+					"%s: reset and restore failed with err %d\n",
 					__func__, err);
-		else
-			ufshcd_recover_pm_error(hba);
+			} else {
+				ufshcd_recover_pm_error(hba);
+				/*
+				 * A successful reset does not finish the requests that were
+				 * in flight when the wedge started. A wedged controller
+				 * reports completion bitmaps unrelated to the live tags, so
+				 * those commands are neither retried nor failed and the
+				 * pages they touch stay in writeback; jbd2 then parks in
+				 * folio_wait_writeback and hung_task panics a minute after
+				 * UFS itself recovered.
+				 *
+				 * Fail them here, outside host_lock - scsi_done() must not
+				 * run with the host lock held.
+				 */
+				ufshcd_complete_dangling(hba);
+			}
 		spin_lock_irqsave(hba->host->host_lock, flags);
 	}
 
@@ -7280,7 +7378,7 @@ static irqreturn_t ufshcd_check_errors(struct ufs_hba *hba, u32 intr_status)
 			ufshcd_print_pwr_info(hba);
 			ufshcd_print_tx_eq_params(hba);
 		}
-		ufshcd_schedule_eh_work(hba);
+		ufshcd_schedule_eh_work(hba, false);
 		retval |= IRQ_HANDLED;
 	}
 	/*
@@ -7480,7 +7578,7 @@ static irqreturn_t ufshcd_intr(int irq, void *__hba)
 		    time_after(jiffies, last_divergence_recovery + 10 * HZ)) {
 			last_divergence_recovery = jiffies;
 			dev_err(hba->dev,
-				"state divergence with %d outstanding requests, forcing error recovery\n",
+				"state divergence with %lu outstanding requests, forcing error recovery\n",
 				hba->outstanding_reqs);
 			ufshcd_force_error_recovery(hba);
 		}
@@ -8122,7 +8220,7 @@ static int ufshcd_abort(struct scsi_cmnd *cmd)
 
 		spin_lock_irqsave(host->host_lock, flags);
 		hba->force_reset = true;
-		ufshcd_schedule_eh_work(hba);
+		ufshcd_schedule_eh_work(hba, false);
 		spin_unlock_irqrestore(host->host_lock, flags);
 		goto release;
 	}
@@ -8227,8 +8325,9 @@ static int ufshcd_host_reset_and_restore(struct ufs_hba *hba)
 		ktime_t probe_start = ktime_get();
 
 		err = ufshcd_device_init(hba, /*init_dev_params=*/false);
-		if (!err)
+		if (!err) {
 			err = ufshcd_probe_hba(hba, false);
+		}
 		ufshcd_process_probe_result(hba, probe_start, err);
 	}
 
@@ -8247,6 +8346,47 @@ static int ufshcd_host_reset_and_restore(struct ufs_hba *hba)
  *
  * Return: zero on success, non-zero on failure.
  */
+/*
+ * Finish every request the reset could not account for.
+ *
+ * A wedged controller reports completion bitmaps that have nothing to do with
+ * the tags actually in flight, so ufshcd_complete_requests() completes nothing.
+ * The requests are then neither retried nor failed, and their pages sit in
+ * writeback forever - jbd2 blocks in folio_wait_writeback and hung_task kills
+ * the box even though UFS itself came back within a millisecond.
+ *
+ * Completing them with DID_ERROR makes the block layer unwind: bio ends,
+ * writeback finishes, jbd2 moves on.
+ */
+static bool ufshcd_complete_dangling_one(struct request *rq, void *priv)
+{
+	struct scsi_cmnd *cmd = blk_mq_rq_to_pdu(rq);
+	int *count = priv;
+
+	if (blk_mq_is_reserved_rq(rq))
+		return true;
+
+	if (!cmd->device)
+		return true;
+
+	set_host_byte(cmd, DID_ERROR);
+	(*count)++;
+	scsi_done(cmd);
+	return true;
+}
+
+static void ufshcd_complete_dangling(struct ufs_hba *hba)
+{
+	int count = 0;
+
+	blk_mq_tagset_busy_iter(&hba->host->tag_set,
+				ufshcd_complete_dangling_one, &count);
+	if (count)
+		dev_err(hba->dev,
+			"completed %d dangling request(s) with DID_ERROR after reset\n",
+			count);
+}
+
 static int ufshcd_reset_and_restore(struct ufs_hba *hba)
 {
 	u32 saved_err = 0;
@@ -8289,6 +8429,12 @@ static int ufshcd_reset_and_restore(struct ufs_hba *hba)
 	 * Unit Attention properly.
 	 */
 	scsi_report_bus_reset(hba->host, 0);
+
+	/*
+	 * Requests left over from before the reset are failed by the caller,
+	 * ufshcd_err_handler(), once it is back outside this critical section:
+	 * scsi_done() must not run with host_lock held.
+	 */
 	if (err) {
 		hba->ufshcd_state = UFSHCD_STATE_ERROR;
 		hba->saved_err |= saved_err;
@@ -8328,7 +8474,7 @@ static int ufshcd_eh_host_reset_handler(struct scsi_cmnd *cmd)
 
 	spin_lock_irqsave(hba->host->host_lock, flags);
 	hba->force_reset = true;
-	ufshcd_schedule_eh_work(hba);
+	ufshcd_schedule_eh_work(hba, false);
 	dev_err(hba->dev, "%s: reset in progress - 1\n", __func__);
 	spin_unlock_irqrestore(hba->host->host_lock, flags);
 
@@ -9449,9 +9595,26 @@ static int ufshcd_device_init(struct ufs_hba *hba, bool init_dev_params)
 	}
 
 	/* Verify device initialization by sending NOP OUT UPIU */
-	ret = ufshcd_verify_dev_init(hba);
-	if (ret)
-		return ret;
+	/*
+	 * Skip the NOP OUT verification while recovering from an error.
+	 *
+	 * blk_execute_rq() waits for the completion without a bound of
+	 * its own, and rq->timeout is resolved by SCSI error handling,
+	 * which needs host_sem - the semaphore this handler holds. If the
+	 * device does not answer, the handler therefore blocks forever,
+	 * never reaches ufshcd_err_handling_unprepare(), never unquiesces
+	 * the tag set, and every writeback worker dies in
+	 * blk_mq_get_tag waiting for a tag.
+	 *
+	 * ufshcd_complete_dev_init() below performs the real
+	 * initialisation and does have a working timeout, so during
+	 * recovery take that path. A cold boot still verifies.
+	 */
+	if (!ufshcd_eh_in_progress(hba)) {
+		ret = ufshcd_verify_dev_init(hba);
+		if (ret)
+			return ret;
+	}
 
 	/* Initiate UFS initialization, and waiting until completion */
 	ret = ufshcd_complete_dev_init(hba);
