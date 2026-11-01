@@ -24,7 +24,10 @@ mkdir -p "$R/etc/systemd/system/serial-getty@ttyGS0.service.d"
 cat > "$R/etc/systemd/system/serial-getty@ttyGS0.service.d/autologin.conf" <<'EOF'
 [Service]
 ExecStart=
-ExecStart=-/sbin/agetty -o '-p -- \\u' --keep-baud 115200,38400,9600 ttyGS0 vt100
+# --autologin root makes agetty exec `login -f root`, skipping the password.
+# Do NOT add `-o '-p -- \\u'`: the `--` in that option string terminates
+# login's own option parsing, so the `-f` is dropped and login prompts.
+ExecStart=-/sbin/agetty --autologin root --noclear --keep-baud 115200,38400,9600 ttyGS0 vt100
 Restart=always
 EOF
 
@@ -85,13 +88,38 @@ mtu=1500
 
 [ipv4]
 method=manual
-address1=192.168.42.2/24
+address1=10.42.10.1/24
 never-default=true
 
 [ipv6]
 method=ignore
 EOF
 chmod 600 "$R/etc/NetworkManager/system-connections/usb0-static.nmconnection"
+
+echo "=== sshd: allow root password login on the USB link ==="
+mkdir -p "$R/etc/ssh/sshd_config.d"
+cat > "$R/etc/ssh/sshd_config.d/99-gnt-debug.conf" <<'EOF'
+# Debug access over the USB RNDIS link. Not on a public network; drop this file
+# once the install is trusted.
+PermitRootLogin yes
+PasswordAuthentication yes
+EOF
+chmod 644 "$R/etc/ssh/sshd_config.d/99-gnt-debug.conf"
+
+echo "=== NetworkManager: manage every interface ==="
+# Without this NM leaves the gadget netdev (usb0) "unmanaged" and nothing
+# assigns it an address, so the USB link comes up dead.
+mkdir -p "$R/etc/NetworkManager/conf.d"
+cat > "$R/etc/NetworkManager/conf.d/99-manage-all.conf" <<'EOF'
+[device]
+managed=1
+EOF
+cat > "$R/etc/NetworkManager/conf.d/99-ignore-extra-wifi.conf" <<'EOF'
+# The MTK gen4m driver always creates wlan1/p2p0/swlan0 alongside wlan0.
+# They stay down; hide them so nmcli and applets only show the usable STA.
+[keyfile]
+unmanaged-devices=interface-name:wlan1;interface-name:swlan0;interface-name:p2p0;interface-name=sit0
+EOF
 
 echo "=== enable services ==="
 cat > "$R/etc/writable" <<'EOF'
