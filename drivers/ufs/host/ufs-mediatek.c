@@ -2546,17 +2546,6 @@ static void ufs_mtk_config_scsi_dev(struct scsi_device *sdev)
  * device reboots, the link restarts against a fresh device, and the
  * outstanding I/O is retried.
  */
-static int ufs_mtk_device_reset(struct ufs_hba *hba)
-{
-	struct arm_smccc_res res;
-
-	ufs_mtk_device_reset_ctrl(0, res);
-	mdelay(10);
-	ufs_mtk_device_reset_ctrl(1, res);
-	mdelay(10);
-	dev_info(hba->dev, "device reset via SIP completed\n");
-	return 0;
-}
 
 static const struct ufs_hba_variant_ops ufs_hba_mtk_vops = {
 	.name                = "mediatek.ufshci",
@@ -2574,7 +2563,6 @@ static const struct ufs_hba_variant_ops ufs_hba_mtk_vops = {
 	.suspend             = ufs_mtk_suspend,
 	.resume              = ufs_mtk_resume,
 	.dbg_register_dump   = ufs_mtk_dbg_register_dump,
-	.device_reset        = ufs_mtk_device_reset,
 	.event_notify        = ufs_mtk_event_notify,
 	.config_scaling_param = ufs_mtk_config_scaling_param,
 	.clk_scale_notify    = ufs_mtk_clk_scale_notify,
