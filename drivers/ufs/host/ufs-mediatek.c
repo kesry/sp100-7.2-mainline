@@ -1506,8 +1506,20 @@ static int ufs_mtk_negotiate_pwr_mode(struct ufs_hba *hba,
 	struct ufs_host_params host_params;
 
 	ufshcd_init_host_params(&host_params);
-	host_params.hs_rx_gear = UFS_HS_G5;
-	host_params.hs_tx_gear = UFS_HS_G5;
+	/*
+	 * UFS_MTK_STOCK_GEAR
+	 *
+	 * The stock A22x vendor driver unconditionally limits the UFS gear
+	 * to HS-G1 (ufs_mtk_pwr_change_notify, #else branch). The mainline
+	 * negotiation going to HS-G3/G4 exceeds what this board's PCB and
+	 * the SKhynix H9HQ15AECMBDAR device firmware can handle reliably,
+	 * causing intermittent NAC_RECEIVED events at the data link layer
+	 * and the periodic UFS controller wedge.
+	 *
+	 * HS-G1 (~150 MB/s per lane) matches the stock operating point.
+	 */
+	host_params.hs_rx_gear = UFS_HS_G1;
+	host_params.hs_tx_gear = UFS_HS_G1;
 
 	if (dev_max_params->pwr_rx == SLOW_MODE ||
 	    dev_max_params->pwr_tx == SLOW_MODE)
