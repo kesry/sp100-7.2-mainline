@@ -91,7 +91,7 @@ jobs:
           # docker.io, lxc and friends are preinstalled so the image is
           # container-ready out of the box; they pull their own deps
           sudo debootstrap --arch=arm64 --variant=minbase \
-            --include=systemd,systemd-sysv,udev,dbus,openssh-server,iproute2,iputils-ping,network-manager,nano,less,locales,sudo,kmod,e2fsprogs,docker.io,lxc,lxcfs,cgroupfs-mount,iptables,tzdata \
+            --include=systemd,systemd-sysv,udev,dbus,openssh-server,iproute2,iputils-ping,network-manager,nano,less,locales,sudo,kmod,e2fsprogs,docker.io,lxc,lxcfs,iptables,tzdata \
             trixie rootfs/ http://deb.debian.org/debian
 
       - name: Configure rootfs
