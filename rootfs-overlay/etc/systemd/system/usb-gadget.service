@@ -1,0 +1,15 @@
+[Unit]
+Description=USB composite gadget (RNDIS network + ACM serial console)
+DefaultDependencies=no
+After=sys-kernel-config.mount
+Wants=sys-kernel-config.mount
+ConditionPathExists=/sys/class/udc
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/usb-gadget.sh
+ExecStartPost=-/bin/systemctl restart serial-getty@ttyGS0.service
+
+[Install]
+WantedBy=multi-user.target
