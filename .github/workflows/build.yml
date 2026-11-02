@@ -37,10 +37,48 @@ jobs:
           rm -f arch/arm64/kernel/builtin-dtb.o
           make -j"$(nproc)" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- Image
 
+      - name: Build connectivity modules
+        run: |
+          # conn/ is the vendor out-of-tree WMT/BTIF/gen4m stack behind
+          # wlan0 and Bluetooth. Its .ko vermagic must equal this kernel's
+          # UTS_VERSION - gnt-conn compares uname -v against the
+          # kernel-release marker - so it has to be rebuilt every run.
+          make -C . M="$PWD/conn" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            -j"$(nproc)" \
+            MTK_COMBO_CHIP=SOC2_1X1 WLAN_CHIP_ID=6833 CONFIG_MTK_COMBO_WIFI_HIF=axi \
+            CONFIG_MTK_PLATFORM=mt6833 TARGET_BUILD_VARIANT=userdebug \
+            CONFIG_MTK_COMBO_WIFI=m KBUILD_MODPOST_FAIL_ON_WARNINGS=n \
+            MTK_WLAN_SERVICE=yes MTK_ANDROID_WMT=y MTK_ANDROID_EMI=y \
+            modules
+          mkdir -p conn/out
+          for m in btif/common/btif.ko common/wmt_drv.ko \
+                   wlan/adaptor/wmt_chrdev_wifi.ko \
+                   wlan/core/gen4m/wlan_6833_axi.ko bt/hci/btmtk_stp.ko; do
+            aarch64-linux-gnu-strip --strip-debug -o "conn/out/$(basename "$m")" "$m"
+          done
+          sed -n 's/^#define UTS_VERSION "\(.*\)"$/\1/p' \
+            include/generated/utsversion.h > conn/out/kernel-release
+
       - name: Stage modules
         run: |
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
             INSTALL_MOD_PATH=./mods INSTALL_MOD_STRIP=1 modules_install
+          V=$(ls mods/lib/modules)
+          # vendor modules land under updates/ at exactly the subpaths the
+          # flashed image uses, then one depmod covers in-tree + vendor
+          # modules so modules.dep carries the btif/wmt_drv dependencies.
+          mkdir -p mods/lib/modules/$V/updates/common \
+                   mods/lib/modules/$V/updates/btif/common \
+                   mods/lib/modules/$V/updates/bt/hci \
+                   mods/lib/modules/$V/updates/wlan/adaptor \
+                   mods/lib/modules/$V/updates/wlan/core/gen4m
+          cp conn/out/wmt_drv.ko          mods/lib/modules/$V/updates/common/
+          cp conn/out/btif.ko             mods/lib/modules/$V/updates/btif/common/
+          cp conn/out/btmtk_stp.ko        mods/lib/modules/$V/updates/bt/hci/
+          cp conn/out/wmt_chrdev_wifi.ko  mods/lib/modules/$V/updates/wlan/adaptor/
+          cp conn/out/wlan_6833_axi.ko    mods/lib/modules/$V/updates/wlan/core/gen4m
+          cp conn/out/kernel-release      mods/lib/modules/.conn-release
+          depmod -a -b "$PWD/mods" "$V"
           tar -czf modules.tar.gz -C mods/lib/modules .
 
       - name: Pack boot image
@@ -166,6 +204,14 @@ jobs:
               sudo chmod 644 "$u"
           done
 
+      - name: Place conn kernel-release
+        run: |
+          # tells gnt-conn which UTS_VERSION the vendor .ko were built
+          # against; the overlay ships a dev-machine copy as the default
+          sudo mv rootfs/usr/lib/modules/.conn-release \
+            rootfs/usr/local/libexec/gnt-conn/kernel-release
+          cat rootfs/usr/local/libexec/gnt-conn/kernel-release
+
       - name: Configure rootfs
         run: |
           sudo bash rootfs-setup.sh rootfs/
@@ -189,6 +235,9 @@ jobs:
           # fail. Assert the link itself exists.
           test -L /mnt/img/etc/systemd/system/multi-user.target.wants/gnt-conn.service
           test -L /mnt/img/etc/systemd/system/basic.target.wants/ufs-hungtask-tune.service
+          ls /mnt/img/usr/lib/modules/*/updates/wlan/core/gen4m/wlan_6833_axi.ko >/dev/null
+          grep -q 'updates/common/wmt_drv.ko' /mnt/img/usr/lib/modules/*/modules.dep
+          [ "$(find /mnt/img/usr/lib/modules -name '*.ko*' | wc -l)" -ge 73 ]
           test ! -s /mnt/img/etc/machine-id
           sudo umount /mnt/img
           echo "rootfs contents OK"
