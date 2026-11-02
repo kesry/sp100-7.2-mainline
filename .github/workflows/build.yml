@@ -2,6 +2,8 @@ name: build
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
 
 env:
   BOOT_SIZE: "33554432"
@@ -23,8 +25,8 @@ jobs:
       - name: Kernel config
         run: |
           # arch/arm64/configs/gnt_an00_defconfig is the single source of truth
-          # for this board - display, GPU, KVM, UFS, networking, AppArmor and
-          # the container/VM prerequisites all live there.
+          # for this board - display, GPU, KVM, UFS, networking, AppArmor, the
+          # PWM backlight and the container/VM prerequisites all live there.
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- gnt_an00_defconfig
 
       - name: Build kernel and modules
@@ -51,15 +53,25 @@ jobs:
           echo "boot.img size: $SIZE"
           test "$SIZE" = "$BOOT_SIZE"
           python3 - <<'PY'
-          import struct, zlib
+          import struct, gzip
           d = open('boot.img', 'rb').read()
           assert d[:8] == b'ANDROID!', 'not a boot image'
           ks = struct.unpack_from('<I', d, 8)[0]
-          raw = zlib.decompress(d[2048:2048 + ks])
+          # build_boot.py stores the Image as a gzip stream. zlib.decompress()
+          # chokes on the 1f 8b header ("incorrect header check"), which is what
+          # killed this step: header kernel_size is the COMPRESSED length, so
+          # slice exactly that window and let gzip decode it.
+          raw = gzip.decompress(d[2048:2048 + ks])
           assert raw[0x38:0x3c] == b'ARMd', 'kernel magic missing'
           print(f'kernel raw: {len(raw):,} bytes')
-          ds = struct.unpack_from('<I', d, 0x670)[0]
-          print(f'appended dtb: {ds:,} bytes')
+          # the appended stock DTBO sits behind the ramdisk padding and carries
+          # 64 private MTK bytes before the inner FDT, so locate the FDT by its
+          # magic rather than trusting a header field
+          off = d.find(b'\xd0\x0d\xfe\xed')
+          assert off > 0, 'no appended DTB found'
+          dsz = struct.unpack_from('>I', d, off + 4)[0]
+          assert off + dsz <= len(d), 'DTB size runs past the image'
+          print(f'appended dtb: {dsz:,} bytes at 0x{off:x}')
           print('boot image structure OK')
           PY
 
@@ -78,6 +90,7 @@ jobs:
   rootfs:
     name: Build rootfs image
     runs-on: ubuntu-latest
+    needs: kernel
     steps:
       - uses: actions/checkout@v4
 
@@ -97,14 +110,52 @@ jobs:
           sudo systemctl restart systemd-binfmt || true
           ls /proc/sys/fs/binfmt_misc/qemu-aarch64
 
+      - name: Fetch kernel modules
+        uses: actions/download-artifact@v4
+        with:
+          name: modules
+
       - name: Debootstrap Debian rootfs
         run: |
-          # Deliberately minimal: nothing here beyond what the board needs to
-          # boot, accept a login and bring up Wi-Fi. A container runtime was
-          # carried here historically and only doubled the image size.
+          # Deliberately minimal: nothing beyond what the board needs to boot,
+          # accept a login and bring up Wi-Fi. ca-certificates and netbase are
+          # not optional - without them there is no /etc/hosts, no
+          # /etc/services, no trust store, and apt over https fails.
           sudo debootstrap --arch=arm64 --variant=minbase \
-            --include=systemd,systemd-sysv,udev,dbus,openssh-server,iproute2,iputils-ping,network-manager,nano,less,locales,sudo,kmod,e2fsprogs,tzdata,wpasupplicant,rfkill,fake-hwclock \
+            --include=systemd,systemd-sysv,udev,dbus,openssh-server,iproute2,iputils-ping,network-manager,nano,less,locales,sudo,kmod,e2fsprogs,tzdata,wpasupplicant,rfkill,fake-hwclock,ca-certificates,netbase \
             trixie rootfs/ http://deb.debian.org/debian
+
+      - name: Install modules into rootfs
+        run: |
+          # The modules_install output, not a hand-copied .ko tree: this
+          # tarball is exactly what "make INSTALL_MOD_PATH=... modules_install"
+          # produced, depmod metadata included.
+          sudo mkdir -p rootfs/usr/lib/modules
+          sudo tar -xpf modules.tar.gz -C rootfs/usr/lib/modules
+          VER=$(ls rootfs/usr/lib/modules)
+          echo "installed module tree: $VER"
+          test -n "$VER"
+
+      - name: Copy device overlay
+        run: |
+          # rootfs-overlay/ holds everything the board needs that is neither an
+          # apt package nor a kernel module: the MTK Wi-Fi firmware blobs, the
+          # gnt-conn bring-up tools, the systemd units and the sysctl /
+          # modules-load files.
+          sudo cp -a rootfs-overlay/. rootfs/
+          sudo chmod 755 \
+            rootfs/usr/local/libexec/gnt-conn \
+            rootfs/usr/local/libexec/gnt-conn/tools \
+            rootfs/usr/local/libexec/gnt-conn/conn-prep.sh \
+            rootfs/usr/local/libexec/gnt-conn/conn-wifi.sh \
+            rootfs/usr/local/libexec/gnt-conn/tools/wmtload \
+            rootfs/usr/local/libexec/gnt-conn/tools/wmtserve \
+            rootfs/usr/local/sbin/kexec-load \
+            rootfs/usr/local/sbin/spread-device-irqs.sh \
+            rootfs/usr/local/sbin/sysinfo \
+            rootfs/usr/local/sbin/usb-gadget.sh \
+            rootfs/etc/NetworkManager/dispatcher.d/50-wlan0-mtu
+          sudo chmod 644 rootfs/etc/systemd/system/*.service
 
       - name: Configure rootfs
         run: |
@@ -117,8 +168,18 @@ jobs:
       - name: Verify rootfs image
         run: |
           e2fsck -fn rootfs.img | tail -3
-          # identity must match the initramfs init compiled into the kernel
           tune2fs -l rootfs.img | grep -iE 'volume name|filesystem uuid'
+          # the board only boots when modules, firmware and units made it in
+          sudo mkdir -p /mnt/img
+          sudo mount -o loop,ro rootfs.img /mnt/img
+          ls /mnt/img/usr/lib/modules/*/modules.builtin >/dev/null
+          ls /mnt/img/usr/lib/firmware/WIFI_RAM_CODE_soc2_2_1_1.bin >/dev/null
+          ls /mnt/img/usr/local/libexec/gnt-conn/conn-prep.sh >/dev/null
+          test -e /mnt/img/etc/systemd/system/multi-user.target.wants/gnt-conn.service
+          test -e /mnt/img/etc/systemd/system/basic.target.wants/ufs-hungtask-tune.service
+          test ! -s /mnt/img/etc/machine-id
+          sudo umount /mnt/img
+          echo "rootfs contents OK"
 
       - name: Upload rootfs image
         uses: actions/upload-artifact@v4

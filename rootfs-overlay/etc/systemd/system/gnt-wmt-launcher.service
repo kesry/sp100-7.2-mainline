@@ -1,0 +1,13 @@
+[Unit]
+Description=MT6833 WMT launcher (answers CONSYS ROM patch requests)
+After=gnt-conn-prep.service
+Requires=gnt-conn-prep.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/libexec/gnt-conn/tools/wmtserve serve
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

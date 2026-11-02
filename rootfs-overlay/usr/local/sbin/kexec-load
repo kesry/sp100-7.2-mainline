@@ -1,0 +1,81 @@
+#!/bin/bash
+# /usr/local/sbin/kexec-load - stage a kernel from /boot for the next reboot.
+#
+# Armbian-style: kernels live in /boot as vmlinuz-<ver>, and a single
+# command stages/replaces the one that will be booted. Uses kexec so the
+# boot partition is never rewritten.
+#
+# usage: kexec-load [version]     (default: uname -r)
+#        kexec-load -l           list kernels in /boot
+set -e
+
+BOOT=/boot
+DTB_DIR="$BOOT/dtb/mediatek"
+DTB=${DTB:-$DTB_DIR/mt6833-nzone-gnt-an00.dtb}
+CMDLINE_FILE=/etc/kernel/cmdline
+
+usage() {
+    cat <<EOF
+usage: $0 [-l | -u | version]
+
+  -l            list kernels available in $BOOT
+  -u            unload a staged kernel
+  version       stage /boot/vmlinuz-<version> (default: $(uname -r))
+
+The kernel is loaded with kexec; the boot partition is NOT touched.
+Reboot to activate; the currently running kernel stays in memory otherwise.
+EOF
+}
+
+list_kernels() {
+    echo "kernels in $BOOT:"
+    for f in "$BOOT"/vmlinuz-*; do
+        [ -e "$f" ] || continue
+        v=${f#$BOOT/vmlinuz-}
+        [ "$v" = "vmlinuz" ] && continue
+        sz=$(stat -c%s "$f" 2>/dev/null)
+        cur=""
+        [ "$v" = "$(uname -r)" ] && cur="   <- running"
+        printf '  %-28s %8s bytes%s\n' "$v" "$sz" "$cur"
+    done
+    echo
+    echo "staged:  $(cat /sys/kernel/kexec_loaded 2>/dev/null | grep -q 1 && echo yes || echo no)"
+}
+
+case "${1:-}" in
+    -l|--list) list_kernels; exit 0 ;;
+    -u|--unload) kexec -u; echo "unstaged"; exit 0 ;;
+    -h|--help) usage; exit 0 ;;
+esac
+
+VER=${1:-$(uname -r)}
+KIMG="$BOOT/vmlinuz-$VER"
+
+[ -f "$KIMG" ] || { echo "error: $KIMG not found"; list_kernels; exit 1; }
+[ -f "$DTB" ]  || { echo "error: dtb $DTB not found"; exit 1; }
+
+# kernel command line: prefer /etc/kernel/cmdline, else reuse the live one
+if [ -f "$CMDLINE_FILE" ]; then
+    CMDLINE=$(cat "$CMDLINE_FILE")
+else
+    CMDLINE=$(cat /proc/cmdline)
+fi
+
+# the root= must point at the real root device
+ROOTDEV=$(awk '$2 == "/" { print $1; exit }' /proc/mounts)
+CMDLINE=$(echo "$CMDLINE" | sed -E "s#root=[^ ]+#root=$ROOTDEV#")
+
+echo "kernel : $KIMG"
+echo "dtb    : $DTB"
+echo "cmdline: $CMDLINE"
+echo
+
+# --reuse-cmdline is not combined with an explicit dtb, so pass everything.
+if kexec -l "$KIMG" --dtb="$DTB" --command-line="$CMDLINE"; then
+    echo
+    echo "staged OK. Reboot to boot it:  systemctl reboot"
+    echo "check:  cat /sys/kernel/kexec_loaded"
+else
+    echo "kexec load FAILED" >&2
+    exit 1
+fi

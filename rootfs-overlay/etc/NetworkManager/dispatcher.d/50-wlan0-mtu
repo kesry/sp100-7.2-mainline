@@ -1,0 +1,22 @@
+#!/bin/sh
+# The upstream path here is PPPoE, so the real MTU is 1492, not 1500.
+#
+# IPv4 learns that through ICMP and caches "mtu 1492" on the route. IPv6 does
+# not: `ip -6 route get` shows no mtu at all, so packets over ~1444 bytes are
+# dropped silently. IPv6 forbids router fragmentation and depends entirely on
+# ICMPv6 "Packet Too Big", which this link does not deliver reliably. The
+# symptom is the classic one - ping works, small pages load, big transfers or
+# some sites hang.
+#
+# Pin the interface to 1480, the usual safe value for IPv6 (RFC 8200 requires
+# at least 1280) that leaves headroom for PPPoE. Measured before: a 1444-byte
+# payload was lost; after: it passes, and a 1 MB IPv6 download completes.
+IFACE="$1"
+ACTION="$2"
+[ "$IFACE" = "wlan0" ] || exit 0
+case "$ACTION" in
+	up|dhcp4-change|dhcp6-change)
+		ip link set dev wlan0 mtu 1480 2>/dev/null
+		;;
+esac
+exit 0

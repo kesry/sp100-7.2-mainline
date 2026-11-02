@@ -1,0 +1,17 @@
+[Unit]
+Description=Generate SSH host keys on first boot
+Documentation=man:ssh-keygen(1)
+# The image ships without host keys on purpose: they are per-machine identity
+# and must not be shared between installs.
+ConditionPathExists=!/etc/ssh/ssh_host_ed25519_key
+Before=ssh.service
+After=local-fs.target
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/ssh-keygen -A
+
+[Install]
+WantedBy=multi-user.target

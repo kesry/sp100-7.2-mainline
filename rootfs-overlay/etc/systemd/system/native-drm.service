@@ -1,0 +1,19 @@
+[Unit]
+Description=Native mtk-drm display (D-PHY panel)
+After=multi-user.target gnt-conn.service
+Wants=gnt-conn.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# insmod is idempotent-safe here: if the module is already loaded we treat it
+# as success (the module may be loaded by an earlier boot stage or by hand).
+ExecStart=/bin/sh -c '\
+  insmod /lib/modules/%v/kernel/drivers/gpu/drm/panel/panel-truly-nt35595-nzone.ko || true; \
+  insmod /lib/modules/%v/kernel/drivers/gpu/drm/mediatek/mediatek-drm.ko || true; \
+  sleep 1; \
+  test -e /sys/class/graphics/fb0/name && grep -q mediatekdrmfb /sys/class/graphics/fb0/name'
+StandardOutput=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,18 @@
+[Unit]
+Description=Keep the framebuffer console visible (unblank fb0)
+DefaultDependencies=no
+After=local-fs.target
+Before=getty@tty1.service
+Wants=getty@tty1.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c '\
+  for d in /sys/class/graphics/fb*; do \
+    [ -e "$d/blank" ] && echo 0 > "$d/blank" || true; \
+  done; \
+  echo 0 > /sys/module/kernel/parameters/consoleblank 2>/dev/null || true'
+
+[Install]
+WantedBy=multi-user.target

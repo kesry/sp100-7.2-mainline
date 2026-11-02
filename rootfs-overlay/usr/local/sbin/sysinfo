@@ -1,0 +1,8 @@
+#!/bin/sh
+echo "kernel : $(uname -r)"
+echo "host   : $(cat /etc/hostname)"
+echo "cpus   : $(nproc)"
+free -m | head -2
+echo "root   : $(df -h / | tail -1)"
+ip -br addr 2>/dev/null
+echo "boot   : $(dd if=/dev/sdc42 bs=1 count=8 2>/dev/null | od -An -c | tr -s ' ')"

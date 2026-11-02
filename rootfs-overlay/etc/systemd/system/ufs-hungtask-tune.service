@@ -1,0 +1,13 @@
+[Unit]
+Description=Tune hung_task timeout for a dead UFS device
+DefaultDependencies=no
+After=sysinit.target systemd-sysctl.service
+Before=basic.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/sbin/sysctl -w kernel.hung_task_timeout_secs=20
+
+[Install]
+WantedBy=basic.target

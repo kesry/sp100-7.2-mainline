@@ -18,7 +18,12 @@ mkfs.ext4 -q -F -L GNTUD -m 1 -O ^has_journal,^metadata_csum,^64bit "$OUT"
 echo "=== mount and copy ==="
 MNT=$(mktemp -d)
 mount -o loop "$OUT" "$MNT"
-trap 'umount "$MNT" 2>/dev/null || true; rmdir "$MNT" 2>/dev/null || true' EXIT
+umount_done=0
+cleanup() {
+    [ "$umount_done" = 0 ] && umount "$MNT" 2>/dev/null || true
+    rmdir "$MNT" 2>/dev/null || true
+}
+trap cleanup EXIT
 
 # copy without crossing into the virtual filesystems; they are re-created
 # empty below
@@ -32,14 +37,25 @@ tar -C "$SRC" -cpf - \
 
 mkdir -p "$MNT/dev" "$MNT/proc" "$MNT/sys" "$MNT/run" "$MNT/tmp"
 chmod 1777 "$MNT/tmp"
+sync
 
-echo "=== ext4 label and uuid ==="
-# the identity must match what the kernel's initramfs init expects
-tune2fs -L GNTUD -U 04eeefae-ae89-41dc-b463-f69bd5f964c4 "$OUT"
+echo "=== ext4 label and uuid (AFTER umount) ==="
+# tune2fs must never run while the image is mounted: the mounted superblock
+# gets flushed back over the change on umount and the identity is silently
+# lost (it happened on this project - CI images came out with random UUIDs).
+umount "$MNT"
+umount_done=1
+# Fixed identity keeps images comparable. The kernel finds root via
+# root=PARTLABEL=userdata (no initramfs since 0eed531d2), so the UUID is not
+# a boot dependency; it is kept stable for tooling only.
+tune2fs -L GNTUD -U 04eeefae-ae89-41dc-b463-f69bd5f964c4 "$OUT" >/dev/null
 
 echo "=== verify ==="
 e2fsck -fn "$OUT" | tail -2
+tune2fs -l "$OUT" | grep -iE 'volume name|filesystem uuid'
+mount -o loop,ro "$OUT" "$MNT"
 ls "$MNT/usr/bin" >/dev/null && echo "tree OK"
+umount "$MNT"
 df -h "$OUT" | tail -1
 
 sync

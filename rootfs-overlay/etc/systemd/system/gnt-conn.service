@@ -1,0 +1,13 @@
+[Unit]
+Description=MT6833 Wi-Fi bring-up (WLAN driver + power on)
+After=gnt-wmt-launcher.service NetworkManager.service
+Wants=gnt-wmt-launcher.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/libexec/gnt-conn/conn-wifi.sh
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target

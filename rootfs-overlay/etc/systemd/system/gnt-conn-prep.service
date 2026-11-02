@@ -1,0 +1,13 @@
+[Unit]
+Description=MT6833 conn modules + WMT chip init
+After=systemd-modules-load.service
+Before=gnt-wmt-launcher.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/libexec/gnt-conn/conn-prep.sh
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

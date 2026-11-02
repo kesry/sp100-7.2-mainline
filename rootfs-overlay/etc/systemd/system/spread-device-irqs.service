@@ -1,0 +1,13 @@
+[Unit]
+Description=Spread device interrupts off CPU0
+DefaultDependencies=no
+After=local-fs.target
+Before=systemd-user-sessions.service basic.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/spread-device-irqs.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
