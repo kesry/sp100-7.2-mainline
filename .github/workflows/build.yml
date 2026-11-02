@@ -54,7 +54,8 @@ jobs:
           for m in btif/common/btif.ko common/wmt_drv.ko \
                    wlan/adaptor/wmt_chrdev_wifi.ko \
                    wlan/core/gen4m/wlan_6833_axi.ko bt/hci/btmtk_stp.ko; do
-            aarch64-linux-gnu-strip --strip-debug -o "conn/out/$(basename "$m")" "$m"
+            test -f "conn/$m" || { echo "conn build produced no conn/$m"; exit 1; }
+            aarch64-linux-gnu-strip --strip-debug -o "conn/out/$(basename "$m")" "conn/$m"
           done
           sed -n 's/^#define UTS_VERSION "\(.*\)"$/\1/p' \
             include/generated/utsversion.h > conn/out/kernel-release
