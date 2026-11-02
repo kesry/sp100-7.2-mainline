@@ -160,7 +160,7 @@ jobs:
           # not optional - without them there is no /etc/hosts, no
           # /etc/services, no trust store, and apt over https fails.
           sudo debootstrap --arch=arm64 --variant=minbase \
-            --include=systemd,systemd-sysv,udev,dbus,openssh-server,iproute2,iputils-ping,network-manager,nano,less,locales,sudo,kmod,e2fsprogs,tzdata,wpasupplicant,rfkill,fake-hwclock,ca-certificates,netbase \
+            --include=iptables,systemd,systemd-sysv,udev,dbus,openssh-server,iproute2,iputils-ping,network-manager,nano,less,locales,sudo,kmod,e2fsprogs,tzdata,wpasupplicant,rfkill,fake-hwclock,ca-certificates,netbase \
             trixie rootfs/ http://deb.debian.org/debian
 
       - name: Install modules into rootfs
