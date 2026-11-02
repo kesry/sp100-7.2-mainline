@@ -155,7 +155,16 @@ jobs:
             rootfs/usr/local/sbin/sysinfo \
             rootfs/usr/local/sbin/usb-gadget.sh \
             rootfs/etc/NetworkManager/dispatcher.d/50-wlan0-mtu
-          sudo chmod 644 rootfs/etc/systemd/system/*.service
+          # unit files land 644 from the repo already. The glob also
+          # matches dbus-activation symlinks Debian's postinst created
+          # (dbus-fi.w1.wpa_supplicant1.service,
+          # dbus-org.freedesktop.nm-dispatcher.service): they point to
+          # /lib/systemd/system/... which does not exist on the runner
+          # outside the chroot, so chmod aborted on the dangling link.
+          for u in rootfs/etc/systemd/system/*.service; do
+              [ -f "$u" ] || continue
+              sudo chmod 644 "$u"
+          done
 
       - name: Configure rootfs
         run: |
@@ -175,8 +184,11 @@ jobs:
           ls /mnt/img/usr/lib/modules/*/modules.builtin >/dev/null
           ls /mnt/img/usr/lib/firmware/WIFI_RAM_CODE_soc2_2_1_1.bin >/dev/null
           ls /mnt/img/usr/local/libexec/gnt-conn/conn-prep.sh >/dev/null
-          test -e /mnt/img/etc/systemd/system/multi-user.target.wants/gnt-conn.service
-          test -e /mnt/img/etc/systemd/system/basic.target.wants/ufs-hungtask-tune.service
+          # wants entries are symlinks with absolute targets; inside a
+          # loop mount -e would resolve them against the RUNNER root and
+          # fail. Assert the link itself exists.
+          test -L /mnt/img/etc/systemd/system/multi-user.target.wants/gnt-conn.service
+          test -L /mnt/img/etc/systemd/system/basic.target.wants/ufs-hungtask-tune.service
           test ! -s /mnt/img/etc/machine-id
           sudo umount /mnt/img
           echo "rootfs contents OK"
