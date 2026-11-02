@@ -474,16 +474,40 @@
 	};
 
 	/*
-	 * Panel brightness via DCS 0x51 injected into the LK-initialised DSI0
-	 * video stream. This stays the default: the native mtk-drm path needs
-	 * the vendor mmsys OVL routing plus SMI/IOMMU nodes, which mainline
-	 * does not provide for mt6833 yet (see docs/28).
-	 */
-	backlight: backlight@14013000 {
-		compatible = "mediatek,dsi-vm-backlight";
-		reg = <0 0x14013000 0 0x1000>;
-		mediatek,wrctrld = <0x2c>;
-		default-brightness-level = <200>;
+ * Display backlight.
+ *
+ * The backlight is NOT a DCS command. Blanking the panel (fb0/blank=1)
+ * leaves the backlight lit, which proves the two are independent, and
+ * DCS 0x51 cannot be delivered anyway: the panel runs in video mode so
+ * the DSI command path is never free. The stock device drives
+ * "lcd-backlight" from the SoC display PWM instead.
+ *
+ * Clock mapping read back from the stock DTB:
+ *   main    = <&infracfg_ao CLK_IFRAO_DISP_PWM>     (id 0x35)
+ *   mm      = <&topckgen    CLK_TOP_DISP_PWM_SEL>   (id 0xbd)
+ *   pwm_src = <&topckgen    CLK_TOP_OSC_D4>         (id 0x4f, 26MHz/4)
+ *
+ * Period 126060 ns is the stock value (pwms = <&disp_pwm 0 0x1ec6c>),
+ * about 7.9 kHz.
+ */
+	disp_pwm0: pwm@1100e000 {
+		compatible = "mediatek,mt6833-disp-pwm";
+		reg = <0 0x1100e000 0 0x1000>;
+		interrupts = <GIC_SPI 0xab IRQ_TYPE_LEVEL_HIGH>;
+		#pwm-cells = <2>;
+		clocks = <&infracfg_ao CLK_IFRAO_DISP_PWM>,
+			 <&topckgen CLK_TOP_DISP_PWM_SEL>,
+			 <&topckgen CLK_TOP_OSC_D4>;
+		clock-names = "main", "mm", "pwm_src";
+		status = "okay";
+	};
+
+	backlight: backlight {
+		compatible = "pwm-backlight";
+		pwms = <&disp_pwm0 0 126060>;
+		brightness-levels = <0 1 2 3 4 6 8 11 16 23 32 45 64 90 128 180 255>;
+		default-brightness-level = <15>;
+		status = "okay";
 	};
 
 	/*
